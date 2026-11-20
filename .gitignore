@@ -1,0 +1,16 @@
+# .NET build & IDE artifacts
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+TestResults/
+
+# Runtime logs & local config
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

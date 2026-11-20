@@ -1,0 +1,46 @@
+/* 暗黑工程风基础样式变量与骨架布局，后续逐步在 M1.3/M1.4 扩展 */
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background-color: #0B0F14;
+    color: #E6EDF3;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+}
+
+.wb-mono {
+    font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+}
+
+.wb-shell-skeleton {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background-color: #0B0F14;
+}
+
+.wb-skeleton-card {
+    background-color: #131922;
+    border: 1px solid #222C3A;
+    border-radius: 10px;
+    padding: 24px 32px;
+    text-align: center;
+}
+
+.wb-accent-cyan {
+    color: #22D3EE;
+}
+
+.wb-muted {
+    color: #7D8590;
+}
