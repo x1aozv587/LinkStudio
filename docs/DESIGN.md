@@ -1,4 +1,4 @@
-# LinkStudio — 硬件与物联网一体化调试工作台详细设计文档（v1.1）
+# LinkStudio — 硬件与物联网一体化调试工作台详细设计文档（v1.3）
 
 > **正式项目名称**：`LinkStudio`（已确认）  
 > **技术路线**：全栈 C#（`.NET 8` + Windows `WPF BlazorWebView` + macOS `Blazor Server` + 原始字节广播总线 + Roslyn 热加载 MCU 二进制协议引擎）  
@@ -16,6 +16,7 @@
 3. **面向 MCU 的 C# 协议插件**：直接用 C#（支持 `[StructLayout(LayoutKind.Sequential, Pack = 1)]`、`Span<byte>`、私有转义/校验）编写协议并一键热重载，彻底告别“复杂二进制协议塞不进 JSON 配置模板”的窘境；同时保留简易模板与文本行插件作为补充。
 4. **全栈 C# 零胶水层**：Windows 下 UI 与底层驱动运行在同一 `.NET 8` 进程内存中，无 HTTP/WebSocket 序列化损耗，支持从界面按钮事件一路 F11 单步调试进串口驱动与协议代码；macOS 复用同一套 `.razor` UI 以本机浏览器模式运行。
 5. **所见即所得的自由工作台**：支持运行模式与编辑模式自由切换，用户可按板卡/测试场景任意拖拽缩放仪表卡片、滑块、指示灯与实时波形图，并一键导出方案（Profile JSON）分享复用。
+6. **单一所有者并发模型**：有状态资源统一由一个 Worker Task 持有，跨模块只通过有界 `Channel<T>` 传递不可变消息；串行性依靠唯一消费循环与完整 `await`，不依赖固定物理线程，也不允许多个模块直接共享并修改同一资源。
 
 ### 目标平台与视觉基座
 - **主力平台**：Windows 10 / 11（WPF + `Microsoft.AspNetCore.Components.WebView.Wpf` 单进程原生桌面程序，体积极小，无端口/后台进程残留）。
@@ -47,7 +48,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  LinkStudio.Core (.NET 8 纯跨平台核心引擎 · 零 UI 依赖)                    │
 │  ├─ Channels     : 串口 / 虚拟MCU源 / TCP C&S / UDP / HTTP S&C / MQTT Broker│
-│  ├─ RawDataBus   : 原始字节零拷贝一对多广播总线（快照无锁扇出 + 异常隔离）    │
+│  ├─ RawDataBus   : 有界异步队列一对多广播总线（Worker 隔离 + 背压策略）       │
 │  ├─ Protocols    : Roslyn .cs 热编译器 + Binary/Text SDK + 沙箱测试引擎    │
 │  ├─ Pipeline     : 内存环形日志队列 + 异步磁盘落盘 + 30fps 遥测聚合器         │
 │  ├─ Automation   : 后端高精度 PeriodicTimer 定时发送与快捷指令调度           │
@@ -91,6 +92,129 @@ public interface IHostWindowService
 - **Windows 实现**：绑定 WPF `Window` 操作及原生 `SaveFileDialog` / `OpenFileDialog`。
 - **macOS Server 实现**：`IsDesktopShell` 返回 `false`（顶部标题栏自动隐藏最小化/最大化/关闭按钮），文件导出/导入走浏览器下载/文件上传流。
 
+### 2.4 统一并发模型（强制工程约束）
+
+LinkStudio 的通信、协议、落盘和自动化模块统一采用 **“单一所有者 Worker Task + 有界 `Channel<T>` 邮箱 + 不可变消息”** 模型。除本节明确列出的例外，后续实现不得自行引入共享可变对象、多 Worker 直接操作同一资源、无界队列或无法追踪的后台任务。
+
+#### 2.4.1 核心定义与不变量
+
+1. **Worker 表示逻辑执行流，不表示固定 OS 线程**：Worker 是只启动一次的长期 `Task`。它可以在一次 `await` 前后由不同 ThreadPool 线程继续执行，但同一 Worker 必须始终按顺序处理消息，任意时刻最多处理一条命令。
+2. **资源只有一个逻辑所有者**：`SerialPort`、单个 TCP 连接、协议半包状态、单个日志文件等可变资源，只能由其所属 Worker 访问。其他模块必须通过命令或数据邮箱交互，禁止绕过队列直接调用或修改内部对象。
+3. **正确 `await` 保证串行控制流**：Worker 处理异步命令时必须 `await` 完成后才能读取下一条命令。禁止用 `_ = HandleAsync(...)`、未管理的 `Task.Run(...)` 或 `async void` 把工作从 Worker 生命周期中分离。
+4. **队列必须有界**：所有长期运行的 `Channel<T>` 必须明确容量、满载策略、单/多 Reader、单/多 Writer 和丢弃计数。除一次性且有严格上限的局部流程外，禁止使用 `Channel.CreateUnbounded`。
+5. **消息入队后不可修改**：命令优先使用不可变 `record`；字节载荷在入口建立独立所有权，入队后生产者不得修改或复用其底层内存。
+6. **锁只保护低频短临界区**：订阅表替换、极小状态快照等控制面操作可以使用 `lock` / `Interlocked` / `Volatile`。禁止在锁内 `await`，也禁止在锁内执行串口、网络、协议、磁盘或 UI 操作。
+7. **线程亲和对象必须显式调度**：WPF 控件、Blazor 组件状态及明确要求固定线程的 COM/厂商 SDK 不适用普通 ThreadPool Worker。它们必须通过 `Dispatcher`、`InvokeAsync` 或专用 `SynchronizationContext` 回到所属线程；若第三方 SDK 明确要求同一物理线程，则使用专用 `Thread`，并在适配层隔离。
+
+#### 2.4.2 模块所有权矩阵
+
+| 模块/资源 | 唯一所有者 | 输入邮箱 | 禁止行为 |
+| :--- | :--- | :--- | :--- |
+| `SerialPortDevice` / `_port` | Serial Command Worker | `Channel<SerialCommand>` | UI、服务或事件回调直接 `Open/Read/Write/Close`；外部直接读取 `_port` |
+| `RawDataBus` 输入与路由 | Dispatcher Worker | `Channel<RawDataPacket>` | 在发布者 I/O 上下文中直接执行协议、日志或 UI 回调 |
+| 每个 `(ChannelId, ProtocolId)` 协议实例 | Protocol Worker | 独立原始数据邮箱 | 多 Worker 并发调用同一协议实例；跨实例共享半包缓冲 |
+| 单个 TCP Client 连接 | Connection Worker | 连接命令/发送邮箱 | 其他连接或 UI 直接操作该 Socket/Stream |
+| HTTP/MQTT 框架回调 | 框架只负责生产消息 | `RawDataBus` 输入邮箱 | 在 Kestrel/MQTT 回调中长时间解析协议、写磁盘或刷新 UI |
+| 原始抓包文件 / 技术日志文件 | File Writer Worker | 独立落盘邮箱 | 多线程直接写同一流；在通信 Worker 中同步落盘 |
+| 遥测聚合状态 | Telemetry Worker | 遥测更新邮箱 | 协议 Worker 直接修改 UI 组件状态 |
+| 串口热插拔/设备枚举状态 | Monitor Worker | 控制命令或系统事件 | Monitor 直接打开/关闭业务通道；高频轮询 UI |
+| Razor/WPF 视图状态 | UI Dispatcher / Blazor Renderer | 状态快照或 UI 事件 | 后台 Worker 直接修改控件、DOM 或组件字段 |
+
+对外状态不得通过内部资源对象临时计算。例如 `SerialPortDevice.IsOpen` 不直接读取 `_port.IsOpen`，而应读取由 Serial Worker 更新的 `Volatile`/`Interlocked` 状态快照。外部只能获得状态 DTO、统计快照或事件，不能获得资源实例。
+
+#### 2.4.3 标准命令 Worker 形态
+
+所有管理状态或 I/O 资源的 Worker 应保持相同骨架：
+
+```csharp
+public sealed class ExampleWorker : IAsyncDisposable
+{
+    private readonly Channel<ExampleCommand> _commands;
+    private readonly Task _workerTask;
+    private int _disposeState;
+
+    public ExampleWorker(int capacity = 256)
+    {
+        _commands = Channel.CreateBounded<ExampleCommand>(
+            new BoundedChannelOptions(capacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false
+            });
+
+        // 构造完成后只启动一次；后续不得再创建第二个 RunAsync。
+        _workerTask = Task.Run(RunAsync);
+    }
+
+    public async Task ExecuteAsync(object value, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var completion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new ExecuteCommand(value, completion, ct);
+
+        await _commands.Writer.WriteAsync(command, ct);
+        await completion.Task.WaitAsync(ct);
+    }
+
+    private async Task RunAsync()
+    {
+        await foreach (ExampleCommand command in _commands.Reader.ReadAllAsync())
+        {
+            try
+            {
+                // 必须等待当前命令完整结束后，才能读取下一条命令。
+                await HandleAsync(command);
+            }
+            catch (Exception ex)
+            {
+                CompleteWithException(command, ex);
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+        {
+            return;
+        }
+
+        _commands.Writer.TryComplete();
+        await _workerTask;
+    }
+}
+```
+
+标准命令必须携带完成回执和必要的取消令牌。`TaskCompletionSource` 必须使用 `RunContinuationsAsynchronously`，避免调用方的后续代码内联到 Worker 调用栈。调用方取消后，Worker 取到尚未开始的命令时必须检查令牌并跳过；已经开始的物理 I/O 是否可取消，由具体驱动能力决定，不能把“调用方停止等待”误报成“设备一定没有执行”。
+
+#### 2.4.4 `async` / `await` 与任务生命周期规则
+
+- `Task` 是可等待的工作与完成状态，不等于独占线程；代码正确性不得依赖 `Environment.CurrentManagedThreadId` 在 `await` 前后保持不变。
+- 外层 `await` 的方法会随内层未完成 Task 一起暂停，线程归还 ThreadPool；内层完成后从内向外恢复。Worker 串行性来自唯一消费循环和完整 `await`，不是固定线程编号。
+- 禁止在业务代码中使用 `.Result` / `.Wait()`；同步入口必须一路改造成异步调用链。UI 事件允许 `async void` 仅限框架规定的事件签名，内部必须立即 `await` 可追踪服务方法并捕获顶层异常。
+- 禁止 fire-and-forget。确需与主流程并行的长期任务必须保存 `Task` 引用、纳入统一取消/关闭流程，并在退出时等待；短期并行必须通过 `Task.WhenAll` 汇合并观察全部异常。
+- `ConfigureAwait(false)` 不是并发保护工具。Core 层不依赖 UI 上下文；UI 层需要更新视图时显式使用宿主调度接口。
+
+#### 2.4.5 背压、异常与关闭规则
+
+- `Wait` 用于不能静默丢失的命令、协议字节流和原始落盘；`DropOldest` 用于终端显示和波形；`DropIncoming` 用于拒绝满载后的新任务；`LatestOnly` 等价于容量 1 + `DropOldest`。
+- 丢弃策略必须记录丢弃计数；等待策略必须记录当前深度、历史高水位和过载诊断。禁止静默吞掉队列满载、订阅异常或 Worker 意外退出。
+- 单条消息处理异常应完成该消息回执并记录技术日志，不能默认杀死整个 Worker；若错误导致资源不可继续使用，Worker 负责转换为明确故障状态并结清剩余命令。
+- 正常关闭顺序统一为：停止生产者 → `TryComplete` 输入 Writer → 排空输入队列 → 完成下游邮箱 → 等待所有 Worker → 释放资源。`CancellationToken.Cancel` 仅用于用户明确取消、故障隔离或优雅关闭超时后的强制终止。
+- `DisposeAsync` 必须幂等。不得在同步 `Dispose` 中用 `.Wait()` 阻塞等待异步 Worker；宿主退出链必须提供确定性的异步等待与超时保护。
+
+#### 2.4.6 不应创建 Worker 的代码
+
+以下代码保持普通同步/无状态实现，不得为了形式统一而增加队列：CRC/Sum/Xor、HEX 与 UTF-8 转换、大小端读写、`FrameBuilder`、`BitReader`、不可变 DTO/配置、只在单个方法内部使用且不逃逸的局部对象。判断标准是：若模块不拥有长期可变状态、不管理 I/O 资源、不要求跨调用排序，也不被多个执行流共享，就不需要 Worker。
+
+#### 2.4.7 强制并发测试门槛
+
+每个新增 Worker 至少覆盖：消息顺序；处理函数最大并发数恒为 1；多生产者并发入队；队列满载策略；单条异常后继续处理；排队期间取消；正常排空关闭；强制取消；重复 `DisposeAsync`；Worker 意外退出后所有等待回执得到完成、取消或异常，禁止永久悬挂。涉及状态快照时还要覆盖读写可见性，涉及丢弃策略时要校验丢弃计数。
+
 ---
 
 ## 3. 仓库与项目目录结构
@@ -109,7 +233,9 @@ LinkStudio/
 │   ├── LinkStudio.Core/                       # 核心跨平台类库 (net8.0)
 │   │   ├── Bus/
 │   │   │   ├── IRawDataBus.cs
-│   │   │   ├── RawDataBus.cs                  # 吸纳原 SerialReceiveWorker 外循环零空转 + 静默 FlushIdle + 快照无锁扇出
+│   │   │   ├── RawDataBus.cs                  # 有界输入队列 + 单调度 Worker + 订阅者独立邮箱
+│   │   │   ├── RawDataSubscription.cs         # 订阅者有界邮箱 + 单一消费 Worker
+│   │   │   ├── RawDataBusOptions.cs            # 输入容量、订阅容量与背压策略
 │   │   │   └── RawDataPacket.cs               # 不可变原始数据包与元数据
 │   │   ├── Channels/
 │   │   │   ├── IChannel.cs                    # 统一通道契约与统计指标
@@ -206,23 +332,26 @@ LinkStudio/
 ### 4.1 广播总线拓扑
 
 ```text
-[串口 / 虚拟MCU / TCP / UDP / HTTP Body / MQTT Payload]
-         │
-         ▼  IChannel 产出不可变 RawDataPacket (ReadOnlyMemory<byte> 原始字节切片)
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    RawDataBus（零拷贝一对多广播总线）                       │
-└───────┬──────────────────────────┬───────────────────────┬──────────────┘
-        │                          │                       │
-        ▼                          ▼                       ▼
- [TerminalLogBuffer]       [协议 A: MotorProto.cs]   [协议 B: McuLogProto]
-  原汁原味存 HEX/ASCII      独立状态机: 拆帧/CRC/映射    只捞取可打印文本行
-  + 可选异步落盘 .bin/.log          │                       │
-        │                          ▼                       ▼
-        │                 ┌─────────────────────────────────────────┐
-        │                 │ IProtocolSink -> FrameStore & Telemetry │
-        │                 └────────────────────────┬────────────────┘
-        ▼                                          ▼
-   [30fps UI 节流批刷] ──► TerminalPage 帧展开   DashboardPage 波形/仪表/LED
+[串口读取 Task] [TCP Client Task] [TCP Server 连接 Task] [HTTP/MQTT 回调]
+       │               │                  │                    │
+       └───────────────┴──────────────────┴────────────────────┘
+                               │ 打包为拥有稳定 byte[] 的 RawDataPacket
+                               ▼
+                 ┌──────────────────────────────┐
+                 │ RawDataBus 有界输入 Channel  │
+                 └──────────────┬───────────────┘
+                                ▼ 单一 Dispatcher Worker 顺序路由
+        ┌───────────────────────┼────────────────────────┐
+        ▼                       ▼                        ▼
+ [终端独立邮箱]          [MotorProto 独立邮箱]      [McuLog 独立邮箱]
+  DropOldest              Wait / 不静默丢帧          Wait / 不静默丢帧
+        │                       │                        │
+        ▼                       ▼                        ▼
+ [终端 Worker]            [协议 Worker]              [协议 Worker]
+  HEX/ASCII + 落盘         拆帧/CRC/遥测              文本行提取
+        │                       └──────────┬─────────────┘
+        ▼                                  ▼
+ 30fps UI 节流批刷              FrameStore / TelemetryStore
 ```
 
 ### 4.2 核心数据结构与接口契约
@@ -247,7 +376,7 @@ public sealed record PacketMeta(
 );
 
 /// <summary>
-/// 投递至广播总线的不可变原始数据包
+/// 投递至广播总线的只读原始数据包
 /// </summary>
 public readonly record struct RawDataPacket(
     string ChannelId,
@@ -259,26 +388,73 @@ public readonly record struct RawDataPacket(
     PacketMeta? Meta = null
 );
 
-public interface IRawDataBus
+public enum RawDataOverflowPolicy : byte
+{
+    Wait,           // 不静默丢数据；队列满时让生产者异步等待
+    DropOldest,     // 丢弃最旧数据，适合终端显示与波形
+    DropIncoming,   // 保留已经排队的数据，拒绝本次新写入数据
+    LatestOnly      // 容量固定为 1，只保留最新状态
+}
+
+public sealed record RawDataBusOptions(int IngressCapacity = 4096);
+
+public sealed record RawDataSubscriptionOptions(
+    string ChannelIdFilter,
+    int Capacity = 1024,
+    RawDataOverflowPolicy OverflowPolicy = RawDataOverflowPolicy.Wait
+);
+
+public interface IRawDataSubscription : IAsyncDisposable
+{
+}
+
+public interface IRawDataBus : IAsyncDisposable
 {
     /// <summary>
-    /// 同步投递原始字节块到当前通道的订阅者（与 "*" 通配订阅者）
+    /// 将数据包异步写入有界输入队列；队列满时按总线背压规则等待
     /// </summary>
-    void Publish(in RawDataPacket packet);
+    ValueTask PublishAsync(RawDataPacket packet, CancellationToken ct = default);
 
     /// <summary>
-    /// 订阅指定通道（或 "*" 表示全通道）的原始字节流
+    /// 创建带独立有界邮箱和单一消费 Worker 的订阅；"*" 表示全通道
     /// </summary>
-    IDisposable Subscribe(string channelIdFilter, Action<RawDataPacket> handler);
+    IRawDataSubscription Subscribe(
+        RawDataSubscriptionOptions options,
+        Func<RawDataPacket, CancellationToken, ValueTask> handler
+    );
 }
 ```
 
-### 4.3 高波特率防卡顿与并发保护机制
+### 4.3 异步队列、Worker 与线程模型
 
-针对 `1,000,000` (1 Mbps) 及以上高波特率连续喷数场景，直接继承旧 `SerialLink` 真机实测打磨出的稳定机制并升级为 **三道防线**：
-1. **单 Worker 命令队列 + 零空转广播**：底层串口复用 `SerialPortDevice` 单 Worker `Channel<SerialCommand>` 模型（`Task.Run` 隔离 UI 同步上下文、Debug 日志仅截断打印前 64B 防拖慢 Worker、写前检查 `CancellationToken` 实现停止循环秒停、单条命令与回调异常隔离）；`RawDataBus` 吸纳 `SerialReceiveWorker` 的「**空闲期 `WaitToReadAsync` 零唤醒零异常、收到数据才启动可配置静默窗口（默认 30ms）触发 `FlushIdle`**」设计，并支持多通道不可变订阅者快照无锁扇出。
-2. **有界背压 + 水位裁剪 + 异步落盘**：`TerminalLogBuffer` 复用 `Channel.CreateBounded` 有界队列（满时丢最旧待显帧腾位，配合 `Volatile` 释放标记短路防止 Worker 自旋）与高低水位分批裁剪（攒到 `5500` 条裁剪、一次删 `500` 条、稳在 `5000` 条，避免一次全删卡顿）；同时通过独立异步写文件通道将原始字节或切分帧实时落盘（`.bin` / `.log`），彻底解决 1M baud 下几秒冲掉内存帧导致“抓到的日志留不住”的核心痛点。
-3. **UI 固定 30fps 节流批刷**：绝不在每收到一帧数据时调用 `StateHasChanged()`。UI 侧统一由 `PeriodicTimer(TimeSpan.FromMilliseconds(33))`（33~50ms 可配）批量拉取待显帧（每 Tick 限流最多刷 `100` 帧，可配）与最新遥测样本点：
+1. **I/O 生产者不执行下游业务**：串口、TCP、UDP 等通道在各自异步读取循环中只完成“读取字节 → 建立稳定载荷 → 生成 `RawDataPacket` → `PublishAsync` 入队”。协议解析、日志格式化、磁盘写入和 UI 更新都不得在 I/O 回调或读取循环内直接执行。
+2. **一个输入队列，一个调度 Worker**：`RawDataBus` 内部使用 `Channel.CreateBounded<RawDataPacket>`。单一 Dispatcher Worker 通过 `ReadAllAsync(ct)` 零空转等待数据，并按进入总线的先后顺序路由到匹配通道 ID 和 `"*"` 的订阅者邮箱。不同物理通道之间只保证“入队顺序”，业务上依靠各自 `SeqNo` 判断本通道顺序，不假设跨通道时间戳严格有序。
+3. **每个订阅者拥有独立邮箱**：`Subscribe` 为日志、每个协议实例和遥测消费者分别创建有界 `Channel<RawDataPacket>` 与单一消费 Worker。同一订阅者永远不会被并发调用，因此协议的半包缓冲和状态机无需额外加锁；一个订阅者处理缓慢或抛出异常，也不会直接占用串口/TCP 的 I/O 执行上下文。
+4. **异步 Task 不等于独占 OS 线程**：架构中的“串口 Worker”“广播 Worker”“协议 Worker”表示长期异步任务，而不是为每个对象手工创建 `Thread`。队列为空或网络无数据时，`await` 会归还线程；数据到达后由 .NET ThreadPool 安排任意可用线程继续执行。逻辑上的 Worker 保证职责和顺序，实际线程可在不同 `await` 之间切换。
+5. **低频配置仍可使用短锁**：订阅表的增加、删除与快照替换属于低频控制面操作，可以在极短临界区内使用 `lock`；高频数据面只进行 `Channel` 入队、出队和快照读取，不在锁内执行用户协议或磁盘 I/O。
+6. **统一取消与排空**：应用退出或通道关闭时先停止生产者，再完成总线输入 Writer，等待 Dispatcher 排空，随后完成各订阅者邮箱并等待 Worker 退出。所有后台任务接受同一生命周期树下的 `CancellationToken`，不得使用无法追踪的 `async void`。
+
+### 4.4 有界背压、丢弃策略与内存所有权
+
+队列必须有界，不能用无限队列掩盖“生产速度长期大于消费速度”的故障。不同消费者按数据价值采用不同策略：
+
+| 消费者 | 建议容量/策略 | 原因 |
+| :--- | :--- | :--- |
+| 二进制/文本协议 | `Wait` | 拆帧状态依赖完整且有序的字节流，不允许静默丢包；持续积压时记录过载诊断并提示用户 |
+| 原始抓包落盘 | 较大容量 + `Wait` | 以保存完整证据为目标；磁盘长期跟不上时必须显式告警 |
+| 终端屏幕显示 | `DropOldest` | 屏幕只需展示最近内容，旧记录可由落盘文件追溯 |
+| 实时波形 | `DropOldest` | 优先保持最新趋势，避免旧采样拖慢实时显示 |
+| 数字卡片/在线状态 | `LatestOnly` | 中间状态没有展示价值，只需要最新值 |
+
+M1 阶段采用“**入口单次归属拷贝、广播阶段零拷贝**”：通道把驱动/网络缓冲区复制到独立 `byte[]`，封装为 `ReadOnlyMemory<byte>` 后把逻辑所有权交给总线；该数组入队后任何一方都不得修改。多个订阅者共享只读载荷，由 GC 自动保证存活时间。只有性能数据证明分配成为瓶颈后，才允许引入 `ArrayPool<byte>` / `IMemoryOwner<byte>`，并且必须同时实现明确的引用计数和归还协议，禁止把池化内存直接排入异步队列后立即归还。
+
+### 4.5 高波特率防卡顿与并发保护机制
+
+针对 `1,000,000` (1 Mbps) 及以上高波特率连续喷数场景，继承旧 `SerialLink` 真机实测机制并形成 **四道防线**：
+1. **收发 Worker 隔离**：底层串口发送复用 `SerialPortDevice` 单 Worker `Channel<SerialCommand>` 模型；接收循环只打包并异步入总线，不执行协议和 UI 逻辑。Debug 日志只预览前 64B，写前检查 `CancellationToken`，避免停止循环后继续发送。
+2. **零空转异步等待**：所有 Worker 使用 `WaitToReadAsync` / `ReadAllAsync` 等待队列，空闲期不轮询、不唤醒；文本协议在自己的消费 Worker 中实现收到数据后才启动的可配置静默窗口（默认 `30ms`）与 `FlushIdle`，不把分帧职责混入广播总线。
+3. **有界背压 + 水位裁剪 + 异步落盘**：各邮箱使用明确的容量和溢出策略；`TerminalLogBuffer` 采用高低水位分批裁剪（攒到 `5500` 条裁剪、一次删 `500` 条、稳在 `5000` 条），原始抓包通过独立落盘订阅者写入 `.bin` / `.log`。
+4. **UI 固定 30fps 节流批刷**：绝不在每收到一帧数据时调用 `StateHasChanged()`。UI 侧统一由 `PeriodicTimer(TimeSpan.FromMilliseconds(33))`（33~50ms 可配）批量拉取待显帧（每 Tick 限流最多刷 `100` 帧，可配）与最新遥测样本点：
    - 终端区采用 **视口虚拟化（Blazor `<Virtualize>`）**，DOM 节点永远只保留可见区域 ~40 行。
    - 波形图直接将最近批次采样数组批量推入 `uPlot` Canvas。
 
@@ -642,7 +818,7 @@ public interface IChannel : IAsyncDisposable
 
 | 阶段 | 核心交付范围 | 验收标准（DoD） |
 | :--- | :--- | :--- |
-| **M1 · 工程骨架 + 串口核心 MVP** | 建好 `.sln` 四工程结构、暗黑/浅色窗体壳、`RawDataBus` 广播总线（零空转+30ms静默分帧）；复用 `SerialLink` 核心（`SerialPortDevice`、`SerialConnectionService`、`HwndSource` 热插拔、`DataHelper`、`AtomicJsonStore`、`SendPayloadBuilder`、`PresetCycleSender`）；默认 `1,000,000` 波特率、4 种换行符显示模式、清空计数开关、实时异步落盘、串口参数与预设持久化及 `VirtualMcuChannel` | Windows WPF 窗口启动即用；拔插串口自动刷新并处理断线；`Hex/\r/\n` 双向无损切换、多预设 `Seq` 循环发送与实时落盘正常；1M 波特率虚拟 MCU / 真实串口连续收发不卡顿；macOS `Server` 入口与核心复用测试全部通过 |
+| **M1 · 工程骨架 + 串口核心 MVP** | 建好 `.sln` 四工程结构、暗黑/浅色窗体壳、`RawDataBus` 有界输入队列、调度 Worker 与订阅者独立邮箱；复用 `SerialLink` 核心（`SerialPortDevice`、`SerialConnectionService`、`HwndSource` 热插拔、`DataHelper`、`AtomicJsonStore`、`SendPayloadBuilder`、`PresetCycleSender`）；默认 `1,000,000` 波特率、4 种换行符显示模式、清空计数开关、实时异步落盘、串口参数与预设持久化及 `VirtualMcuChannel` | Windows WPF 窗口启动即用；拔插串口自动刷新并处理断线；`Hex/\r/\n` 双向无损切换、多预设 `Seq` 循环发送与实时落盘正常；协议、日志与 UI 消费者在独立 Worker 中运行并具备可验证的背压策略；1M 波特率虚拟 MCU / 真实串口连续收发不卡顿；macOS `Server` 入口与核心复用测试全部通过 |
 | **M2 · 面向 MCU 的协议引擎** | `BinaryProtocolBase`、`CrcLib`、`FrameBuilder`、`BitReader`、`ByteUnescaper`、`TextLineProtocol`、Roslyn `.cs` 热编译与 `CollectibleProtoContext`、终端帧展开卡、协议工坊沙箱、xUnit 核心测试集 | 修改 `protocols/MotorProto.cs` 点热重载无需重启即可生效；故意写错语法能精确返回行号且旧协议继续工作；同一串口同时勾选 `MotorProto` + `BmsProto` + `McuLog` 并行解包不串帧；`Core.Tests` 粘包/半包/错位/CRC 用例 100% 通过 |
 | **M3 · 自由拖拽工作台与方案持久化** | `<DashboardGrid>` (`GridStack.js`)、`<WaveformChart>` (`uPlot`)、9 种内置 Widget 组件、`ProfileRepository` 方案 JSON 导入导出 | 编辑/锁定模式丝滑切换；卡片自由拖拽缩放且刷新/重启后布局完全恢复；滑块/按钮能调用 `IProtocol.Encode` 真实封包下发；多通道波形 30fps 流畅运行并可导出 CSV |
 | **M4 · 本地网络服务端与客户端全家桶** | `TcpClient/Server`、`UdpChannel`、`HttpMockServerChannel` + 极简 HTTP Client、`MqttBrokerChannel` (`MQTTnet`) 与 `ServersPage` 完整监控面板 | 外部设备/测试脚本连入本机 `1883` MQTT Broker 与 `8080` HTTP Mock Server 后，二进制与 JSON 上报内容能自动进入 `RawDataBus`，由 M2 协议解析并直接驱动 M3 波形与仪表盘；支持从界面反向 Publish / Mock 回复 |
@@ -667,9 +843,9 @@ public interface IChannel : IAsyncDisposable
 
 | 复用等级 | 原文件 / 模块 | 新项目归属与改造方式 |
 | :--- | :--- | :--- |
-| **🟢 直接复用** | `Devices/ISerialPortDevice.cs`、`SerialPortDevice.cs`、`Models/SerialCommand.cs` | 迁入 `LinkStudio.Core/Channels/Serial/`，保留单 Worker `Channel` 排队、优雅排空与写前取消语义，补充 DTR/RTS 控制并外包 `SerialChannel : IChannel` |
+| **🟡 演化升级** | `Devices/ISerialPortDevice.cs`、`SerialPortDevice.cs`、`Models/SerialCommand.cs` | 迁入 `LinkStudio.Core/Channels/Serial/`，保留单 Worker 串行命令模型；将无界队列改为有界 `Channel`，把 `IsOpen` 改为 Worker 更新的线程安全状态快照，补齐 `IAsyncDisposable` 确定性排空、DTR/RTS 控制，并外包 `SerialChannel : IChannel`；注释统一使用“Worker Task”而非暗示固定线程 |
 | **🟢 直接复用** | `Services/.../SerialConnectionService.cs`、`Models/SerialPortConfig.cs`、`SerialFrame.cs` | 迁入 `LinkStudio.Core`，保留拔线检测幂等置空与 `ConnectionLost`/`Closed` 契约 |
-| **🟢 演化升级** | `Services/.../SerialReceiveWorker.cs`、`DefaultDataParse.cs`、`IDataParse.cs` | `SerialReceiveWorker` 的零空转等待 + 30ms 静默窗口演化为 `RawDataBus`；`DefaultDataParse`（`\r\n` + 64KB 上限）演化为内置 `TextLineProtocol` |
+| **🟢 演化升级** | `Services/.../SerialReceiveWorker.cs`、`DefaultDataParse.cs`、`IDataParse.cs` | `SerialReceiveWorker` 的零空转等待演化为通道异步读取循环与 `RawDataBus` 有界队列；`DefaultDataParse`（`\r\n` + 30ms 静默窗口 + 64KB 上限）演化为拥有独立邮箱的内置 `TextLineProtocol` |
 | **🟢 直接复用** | `Helper/DataHelper.cs` | 迁入 `LinkStudio.Core/Helpers/`，继续作为全项目唯一的宽容 HEX 解析与中文报错实现 |
 | **🟢 直接复用** | `Services/.../AppsSettingsService.cs`、`Models/AppsSettings.cs` | 演化为 `LinkStudio.Core/Storage/AtomicJsonStore.cs`，完整保留 `SemaphoreSlim` + 同目录 `.tmp` `WriteThrough` + `File.Replace` 原子落盘 |
 | **🟡 轻量解耦** | `Services/.../DeviceChangeMonitor.cs` | 接口 `IDeviceChangeMonitor` 留 `Core`；WPF `HwndSource` 热插拔监听迁入 `LinkStudio.Desktop.Win`，macOS 新增 `/dev/cu.*` 实现 |
@@ -684,6 +860,6 @@ public interface IChannel : IAsyncDisposable
    - 先把总体功能做完，只修**已知或高概率发生**的问题，不为低概率边缘场景或纯契约完善（如无实际症状的额外状态机包装）过度设计。
 2. **代码与注释规范（源自 `SerialLink/AGENTS.md`）**：
    - 注释使用 **中文**，写在目标代码**上方**（避免行尾注释），解释“为什么这样设计 / 线程与生命周期约束”而非复述“做了什么”；类型名、API 名与技术术语保持英文；
-   - 异步 I/O 坚持 `async/await`，严禁使用 `.Result` / `.Wait()` 阻塞 UI 线程，避免不必要的 `async void`；
+   - 异步 I/O 坚持 `async/await` 并遵守 §2.4 统一并发模型；严禁使用 `.Result` / `.Wait()`，`async void` 仅允许用于框架规定的 UI 事件签名；
    - 不写空 `catch` 吞掉异常，面向用户的中文提示与技术日志（`Serilog`）严格分离；
    - 遵循统一命名约定：`PascalCase` 类型/方法/属性、`_camelCase` 私有字段、`IXxxService` 接口、`XxxAsync` 异步方法。
