@@ -236,7 +236,13 @@ LinkStudio/
 │   │   │   ├── RawDataBus.cs                  # 有界输入队列 + 单调度 Worker + 订阅者独立邮箱
 │   │   │   ├── RawDataSubscription.cs         # 订阅者有界邮箱 + 单一消费 Worker
 │   │   │   ├── RawDataBusOptions.cs            # 输入容量、订阅容量与背压策略
-│   │   │   └── RawDataPacket.cs               # 不可变原始数据包与元数据
+│   │   │   ├── RawDataPacket.cs               # 不可变原始数据包
+│   │   │   └── Metadata/                     # 各通道的附加信息
+│   │   │       ├── PacketMeta.cs
+│   │   │       ├── HttpPacketMeta.cs
+│   │   │       ├── MqttPacketMeta.cs
+│   │   │       ├── NetworkPacketMeta.cs
+│   │   │       └── RemoteEndpoint.cs
 │   │   ├── Channels/
 │   │   │   ├── IChannel.cs                    # 统一通道契约与统计指标
 │   │   │   ├── ChannelManager.cs              # 通道生命周期与路由管理
@@ -356,72 +362,77 @@ LinkStudio/
 
 ### 4.2 核心数据结构与接口契约
 
+`RawDataPacket` 保存通道 ID、通道类型、收发方向和时间戳，以及通道内序号 `SeqNo` 和原始载荷 `Payload`。可选的 `Meta` 由通道按数据来源填写。串口等不需要附加信息的通道可以保留 `null`。
+
+各类型存放在 `Bus/Metadata/` 下，每个类型一个文件。
+
+| 类型 | 用途 |
+| :--- | :--- |
+| `PacketMeta` | 附加信息的公共基类型 |
+| `HttpPacketMeta` | HTTP 方法、路径及可选的远端地址 |
+| `MqttPacketMeta` | MQTT Topic、QoS 和客户端 ID |
+| `NetworkPacketMeta` | TCP 和 UDP 的远端地址 |
+| `RemoteEndpoint` | 供 HTTP、TCP 和 UDP 共用的只读 IP 地址与端口 |
+
+总线只按通道分发。需要附加信息的订阅者可以用 `packet.Meta is HttpPacketMeta http` 判断类型并读取 HTTP 字段。
+
 ```csharp
-namespace LinkStudio.Core.Bus;
+using LinkStudio.Core.Bus.Metadata;
 
-public enum PacketDirection : byte { Rx = 0, Tx = 1 }
-
-public enum ChannelKind : byte { Serial, VirtualMcu, TcpClient, TcpServer, Udp, HttpServer, MqttBroker }
-
-/// <summary>
-/// 通道附加元数据；串口保持 null 以实现零额外对象分配
-/// </summary>
-public sealed record PacketMeta(
-    string? RemoteEndpoint = null,   // TCP/UDP 对端 IP:Port
-    string? MqttTopic = null,        // MQTT Topic
-    byte? MqttQoS = null,
-    string? MqttClientId = null,
-    string? HttpMethod = null,       // HTTP Method / Path
-    string? HttpPath = null
-);
-
-/// <summary>
-/// 投递至广播总线的只读原始数据包
-/// </summary>
-public readonly record struct RawDataPacket(
-    string ChannelId,
-    ChannelKind ChannelKind,
-    PacketDirection Direction,
-    long TimestampMs,
-    uint SeqNo,
-    ReadOnlyMemory<byte> Payload,
-    PacketMeta? Meta = null
-);
-
-public enum RawDataOverflowPolicy : byte
+namespace LinkStudio.Core.Bus
 {
-    Wait,           // 不静默丢数据；队列满时让生产者异步等待
-    DropOldest,     // 丢弃最旧数据，适合终端显示与波形
-    DropIncoming,   // 保留已经排队的数据，拒绝本次新写入数据
-    LatestOnly      // 容量固定为 1，只保留最新状态
-}
+    public enum PacketDirection : byte { Rx = 0, Tx = 1 }
 
-public sealed record RawDataBusOptions(int IngressCapacity = 4096);
-
-public sealed record RawDataSubscriptionOptions(
-    string ChannelIdFilter,
-    int Capacity = 1024,
-    RawDataOverflowPolicy OverflowPolicy = RawDataOverflowPolicy.Wait
-);
-
-public interface IRawDataSubscription : IAsyncDisposable
-{
-}
-
-public interface IRawDataBus : IAsyncDisposable
-{
-    /// <summary>
-    /// 将数据包异步写入有界输入队列；队列满时按总线背压规则等待
-    /// </summary>
-    ValueTask PublishAsync(RawDataPacket packet, CancellationToken ct = default);
+    public enum ChannelKind : byte { Serial, VirtualMcu, TcpClient, TcpServer, Udp, HttpServer, MqttBroker }
 
     /// <summary>
-    /// 创建带独立有界邮箱和单一消费 Worker 的订阅；"*" 表示全通道
+    /// 投递至广播总线的只读原始数据包
     /// </summary>
-    IRawDataSubscription Subscribe(
-        RawDataSubscriptionOptions options,
-        Func<RawDataPacket, CancellationToken, ValueTask> handler
+    public readonly record struct RawDataPacket(
+        string ChannelId,
+        ChannelKind ChannelKind,
+        PacketDirection Direction,
+        long TimestampMs,
+        uint SeqNo,
+        ReadOnlyMemory<byte> Payload,
+        PacketMeta? Meta = null
     );
+
+    public enum RawDataOverflowPolicy : byte
+    {
+        Wait,           // 不静默丢数据；队列满时让生产者异步等待
+        DropOldest,     // 丢弃最旧数据，适合终端显示与波形
+        DropIncoming,   // 保留已经排队的数据，拒绝本次新写入数据
+        LatestOnly      // 容量固定为 1，只保留最新状态
+    }
+
+    public sealed record RawDataBusOptions(int IngressCapacity = 4096);
+
+    public sealed record RawDataSubscriptionOptions(
+        string ChannelIdFilter,
+        int Capacity = 1024,
+        RawDataOverflowPolicy OverflowPolicy = RawDataOverflowPolicy.Wait
+    );
+
+    public interface IRawDataSubscription : IAsyncDisposable
+    {
+    }
+
+    public interface IRawDataBus : IAsyncDisposable
+    {
+        /// <summary>
+        /// 将数据包异步写入有界输入队列；队列满时按总线背压规则等待
+        /// </summary>
+        ValueTask PublishAsync(RawDataPacket packet, CancellationToken ct = default);
+
+        /// <summary>
+        /// 创建带独立有界邮箱和单一消费 Worker 的订阅；"*" 表示全通道
+        /// </summary>
+        IRawDataSubscription Subscribe(
+            RawDataSubscriptionOptions options,
+            Func<RawDataPacket, CancellationToken, ValueTask> handler
+        );
+    }
 }
 ```
 
@@ -445,6 +456,8 @@ public interface IRawDataBus : IAsyncDisposable
 | 终端屏幕显示 | `DropOldest` | 屏幕只需展示最近内容，旧记录可由落盘文件追溯 |
 | 实时波形 | `DropOldest` | 优先保持最新趋势，避免旧采样拖慢实时显示 |
 | 数字卡片/在线状态 | `LatestOnly` | 中间状态没有展示价值，只需要最新值 |
+
+当单个 `Wait` 订阅的邮箱满载时，调度 Worker 会等它腾出容量。等待期间其他订阅的后续投递也可能延迟。若入口队列随之填满，`PublishAsync` 同样会等待。总线与订阅分别提供当前深度、观测到的高水位、丢弃数和背压次数。
 
 M1 阶段采用“**入口单次归属拷贝、广播阶段零拷贝**”：通道把驱动/网络缓冲区复制到独立 `byte[]`，封装为 `ReadOnlyMemory<byte>` 后把逻辑所有权交给总线；该数组入队后任何一方都不得修改。多个订阅者共享只读载荷，由 GC 自动保证存活时间。只有性能数据证明分配成为瓶颈后，才允许引入 `ArrayPool<byte>` / `IMemoryOwner<byte>`，并且必须同时实现明确的引用计数和归还协议，禁止把池化内存直接排入异步队列后立即归还。
 
@@ -470,40 +483,41 @@ M1 阶段采用“**入口单次归属拷贝、广播阶段零拷贝**”：通�
 ### 5.2 统一契约：`IProtocol` 与 `IProtocolSink`
 
 ```csharp
-namespace LinkStudio.Core.Protocols;
-
-public interface IProtocol
+namespace LinkStudio.Core.Protocols
 {
-    string Id { get; }
-    string Name { get; }
-    string Description { get; }
+    public interface IProtocol
+    {
+        string Id { get; }
+        string Name { get; }
+        string Description { get; }
 
-    /// <summary>
-    /// 声明本协议输出的遥测变量与支持下发的指令参数，供工作台下拉绑定
-    /// </summary>
-    ProtocolDescriptor Describe();
+        /// <summary>
+        /// 声明本协议输出的遥测变量与支持下发的指令参数，供工作台下拉绑定
+        /// </summary>
+        ProtocolDescriptor Describe();
 
-    /// <summary>
-    /// 消费广播进来的原始数据包；协议自行管理缓冲、拆帧、转义、校验与字段提取
-    /// </summary>
-    void OnRawData(in RawDataPacket packet, IProtocolSink sink);
+        /// <summary>
+        /// 消费广播进来的原始数据包；协议自行管理缓冲、拆帧、转义、校验与字段提取
+        /// </summary>
+        void OnRawData(in RawDataPacket packet, IProtocolSink sink);
 
-    /// <summary>
-    /// 反向组帧：根据指令 ID 和界面参数生成发送给设备的原始字节（不支持可返回 null）
-    /// </summary>
-    byte[]? Encode(string commandId, IReadOnlyDictionary<string, object?> args);
+        /// <summary>
+        /// 反向组帧：根据指令 ID 和界面参数生成发送给设备的原始字节（不支持可返回 null）
+        /// </summary>
+        byte[]? Encode(string commandId, IReadOnlyDictionary<string, object?> args);
 
-    /// <summary>
-    /// 清空内部半包状态机（通道重连或用户清屏时由管理器调用）
-    /// </summary>
-    void Reset();
-}
+        /// <summary>
+        /// 清空内部半包状态机（通道重连或用户清屏时由管理器调用）
+        /// </summary>
+        void Reset();
+    }
 
-public interface IProtocolSink
-{
-    void EmitFrame(DecodedFrameResult frame);
-    void EmitTelemetry(string variableKey, double value, long timestampMs);
-    void EmitDiagnostic(DiagnosticLevel level, string message);
+    public interface IProtocolSink
+    {
+        void EmitFrame(DecodedFrameResult frame);
+        void EmitTelemetry(string variableKey, double value, long timestampMs);
+        void EmitDiagnostic(DiagnosticLevel level, string message);
+    }
 }
 ```
 
@@ -654,7 +668,7 @@ public interface IChannel : IAsyncDisposable
 | **TcpClient / TcpServer** | **M4** | Client 支持断线重连选项；Server 支持多客户端连接管理列表，支持界面勾选向指定单个客户端发送或广播给全部在线客户端。 |
 | **UdpChannel** | **M4** | 支持指定本地绑定端口、单播目标 `IP:Port` 以及局域网广播地址（`255.255.255.255`）。 |
 | **HttpMockServerChannel & SimpleHttpClient** | **M4** | 动态拉起独立的 Kestrel 监听实例（与主程序端口彻底隔离），可配多条 Mock 路由（Method、Path、状态码、响应头/体、可选模拟延迟），所有入站请求的 Body 无论文本还是二进制字节流均直通 `RawDataBus`，并记录完整请求头/体抓包详情；附带简洁 HTTP Client 用于主动发测试请求。 |
-| **MqttBrokerChannel (内置 Broker)** | **M4** | 基于 `MQTTnet.Server` 进程内运行完整 MQTT Broker（可配端口如 `1883` 及可选用户名/密码校验），实时面板展示在线客户端列表（ClientId / IP / 订阅 Topic），所有设备 Publish 的二进制或文本 Payload 携带 `PacketMeta(MqttTopic)` 投入 `RawDataBus`，界面支持选定 Topic 直接发布 HEX/文本/协议指令。 |
+| **MqttBrokerChannel (内置 Broker)** | **M4** | 基于 `MQTTnet.Server` 进程内运行完整 MQTT Broker（可配端口如 `1883` 及可选用户名/密码校验），实时面板展示在线客户端列表（ClientId / IP / 订阅 Topic），所有设备 Publish 的二进制或文本 Payload 携带 `MqttPacketMeta` 投入 `RawDataBus`，界面支持选定 Topic 直接发布 HEX/文本/协议指令。 |
 
 ### 6.3 串口收发与预设实战规范（继承自旧 SerialLink 实测习惯）
 
@@ -859,6 +873,7 @@ public interface IChannel : IAsyncDisposable
 1. **务实取舍原则（源自 `SerialLink/docs/TODO.md`）**：
    - 先把总体功能做完，只修**已知或高概率发生**的问题，不为低概率边缘场景或纯契约完善（如无实际症状的额外状态机包装）过度设计。
 2. **代码与注释规范（源自 `SerialLink/AGENTS.md`）**：
+   - 新增 C# 类型和设计文档中的 C# 示例采用块范围命名空间，将类型声明放在 namespace 的大括号内；
    - 注释使用 **中文**，写在目标代码**上方**（避免行尾注释），解释“为什么这样设计 / 线程与生命周期约束”而非复述“做了什么”；类型名、API 名与技术术语保持英文；
    - 异步 I/O 坚持 `async/await` 并遵守 §2.4 统一并发模型；严禁使用 `.Result` / `.Wait()`，`async void` 仅允许用于框架规定的 UI 事件签名；
    - 不写空 `catch` 吞掉异常，面向用户的中文提示与技术日志（`Serilog`）严格分离；
