@@ -1,4 +1,4 @@
-﻿using LinkStudio.Core.Bus;
+using LinkStudio.Core.Bus;
 
 
 namespace LinkStudio.Core.Channels
@@ -18,5 +18,7 @@ namespace LinkStudio.Core.Channels
         Task OpenAsync( CancellationToken ct = default );
 
         Task CloseAsync();
+
+        Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default);
     }
 }
