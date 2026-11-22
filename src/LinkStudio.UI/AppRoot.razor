@@ -1,3 +1,7 @@
+@using System.Text
+@using LinkStudio.Core.Bus
+@using LinkStudio.Core.Channels
+
 <div class="wb-shell-skeleton">
     <div class="wb-skeleton-card">
         <h1 style="margin: 0 0 8px 0; font-size: 20px;">
@@ -6,5 +10,52 @@
         <p class="wb-mono wb-muted" style="margin: 0;">
             M1.1 骨架已就绪 · v@(LinkStudioMetadata.Version)
         </p>
+        <button type="button" @onclick="ShowVirtualPacketAsync" disabled="@_isWaiting">
+            测试虚拟设备
+        </button>
+        <p class="wb-mono" role="status">@_message</p>
     </div>
 </div>
+
+@code {
+    private string _message = "等待启动";
+    private bool _isWaiting;
+
+    private async Task ShowVirtualPacketAsync()
+    {
+        if (_isWaiting)
+        {
+            return;
+        }
+
+        _isWaiting = true;
+        _message = "等待数据包…";
+
+        try
+        {
+            await using var bus = new RawDataBus();
+            await using var channel = new VirtualMcuChannel(bus);
+            var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // 通道打开时就会发出第一包，因此要先订阅。
+            await using var subscription = bus.Subscribe(new(channel.Id), (packet, _) =>
+            {
+                received.TrySetResult(Encoding.UTF8.GetString(packet.Payload.Span));
+                return ValueTask.CompletedTask;
+            });
+
+            await channel.OpenAsync();
+
+            // 由按钮事件在 Blazor 渲染上下文里更新界面。
+            _message = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        catch (TimeoutException)
+        {
+            _message = "两秒内未收到数据包";
+        }
+        finally
+        {
+            _isWaiting = false;
+        }
+    }
+}
