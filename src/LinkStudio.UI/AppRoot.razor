@@ -1,6 +1,6 @@
 @using System.Text
 @using LinkStudio.Core.Bus
-@using LinkStudio.Core.Channels
+@using LinkStudio.Core.Devices.Virtual
 @implements IAsyncDisposable
 
 <div class="wb-shell-skeleton">
@@ -12,7 +12,7 @@
             </div>
             <button type="button" class="wb-virtual-terminal-button"
                     @onclick="ToggleAsync" disabled="@_isChanging">
-                @(_channel is null ? "启动虚拟设备" : "停止虚拟设备")
+                @(_device is null ? "启动虚拟设备" : "停止虚拟设备")
             </button>
         </header>
 
@@ -36,7 +36,7 @@
             <div class="wb-virtual-terminal-send-row">
                 <input id="virtual-terminal-text" class="wb-mono" type="text"
                        @bind="_draft" @bind:event="oninput"
-                       disabled="@(_isChanging || _channel?.IsOpen != true)" />
+                       disabled="@(_isChanging || _device?.IsOpen != true)" />
                 <button type="submit" class="wb-virtual-terminal-button" disabled="@(!CanSend)">
                     @(_isSending ? "发送中…" : "发送")
                 </button>
@@ -54,7 +54,7 @@
     private const int MessageLimit = 50;
     private readonly Queue<string> _messages = new(MessageLimit);
     private RawDataBus? _bus;
-    private VirtualMcuChannel? _channel;
+    private VirtualMcuDevice? _device;
     private Task? _transition;
     private string _status = "未启动";
     private bool _isChanging;
@@ -65,7 +65,7 @@
     private bool _isSending;
 
     private bool CanSend => !_disposed && !_isChanging && !_isSending
-        && _channel?.IsOpen == true && !string.IsNullOrWhiteSpace(_draft);
+        && _device?.IsOpen == true && !string.IsNullOrWhiteSpace(_draft);
 
     private Task ToggleAsync()
     {
@@ -84,7 +84,7 @@
 
         try
         {
-            if (_channel is null)
+            if (_device is null)
             {
                 _status = "正在启动…";
                 _sendError = null;
@@ -112,17 +112,17 @@
     private async Task StartAsync()
     {
         var bus = new RawDataBus();
-        var channel = new VirtualMcuChannel(bus);
+        var device = new VirtualMcuDevice(bus);
         _bus = bus;
-        _channel = channel;
+        _device = device;
 
         try
         {
-            // 打开通道就会收到第一包，所以先订阅。总线负责关闭它创建的订阅。
-            bus.Subscribe(new(channel.Id, Capacity: MessageLimit, OverflowPolicy: RawDataOverflowPolicy.DropOldest),
+            // 打开设备就会收到第一包，所以先订阅。总线负责关闭它创建的订阅。
+            bus.Subscribe(new(device.Id, Capacity: MessageLimit, OverflowPolicy: RawDataOverflowPolicy.DropOldest),
                 (packet, _) => ShowPacketAsync(bus, packet));
 
-            await channel.OpenAsync();
+            await device.OpenAsync();
         }
         catch
         {
@@ -133,8 +133,8 @@
 
     private async Task SendTextAsync()
     {
-        var channel = _channel;
-        if (channel is null || !CanSend)
+        var device = _device;
+        if (device is null || !CanSend)
         {
             return;
         }
@@ -146,21 +146,21 @@
         try
         {
             // 界面把文字编码为字节，发送与回显记录由总线订阅回调显示。
-            await channel.SendAsync(Encoding.UTF8.GetBytes(text));
+            await device.SendAsync(Encoding.UTF8.GetBytes(text));
 
-            if (!_disposed && ReferenceEquals(_channel, channel) && _draft == text)
+            if (!_disposed && ReferenceEquals(_device, device) && _draft == text)
             {
                 _draft = string.Empty;
             }
         }
-        catch (OperationCanceledException) when (!ReferenceEquals(_channel, channel))
+        catch (OperationCanceledException) when (!ReferenceEquals(_device, device))
         {
             // 停止设备时，旧会话中尚未完成的发送请求会被取消。
         }
         catch (Exception error)
         {
             Serilog.Log.Error(error, "发送数据到虚拟设备失败");
-            if (!_disposed && ReferenceEquals(_channel, channel))
+            if (!_disposed && ReferenceEquals(_device, device))
             {
                 _sendError = "发送失败，请重试。";
             }
@@ -195,18 +195,18 @@
 
     private async Task StopAsync()
     {
-        var channel = _channel;
+        var device = _device;
         var bus = _bus;
 
         // 关闭前取消当前会话关联，忽略还没更新到页面的旧消息。
-        _channel = null;
+        _device = null;
         _bus = null;
 
         try
         {
-            if (channel is not null)
+            if (device is not null)
             {
-                await channel.DisposeAsync();
+                await device.DisposeAsync();
             }
         }
         finally

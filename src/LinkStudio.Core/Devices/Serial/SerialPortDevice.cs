@@ -4,7 +4,7 @@ using System.IO.Ports;
 using System.Text;
 using System.Threading.Channels;
 
-namespace LinkStudio.Core.Devices
+namespace LinkStudio.Core.Devices.Serial
 {
     public class SerialPortDevice : ISerialPortDevice
     {
