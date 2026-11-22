@@ -1,6 +1,7 @@
 using System.Threading.Tasks;
+using LinkStudio.Core.Models;
 
-namespace LinkStudio.Core.Models
+namespace LinkStudio.Core.Devices.Serial
 {
     /// <summary>
     /// 串口 Worker 要处理的所有命令的基类。

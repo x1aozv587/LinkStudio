@@ -1,6 +1,6 @@
 using LinkStudio.Core.Models;
 
-namespace LinkStudio.Core.Devices
+namespace LinkStudio.Core.Devices.Serial
 {
     /// <summary>
     /// 串口设备的对外契约（"一个串口设备怎么操作"）。

@@ -47,7 +47,7 @@
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  LinkStudio.Core (.NET 8 纯跨平台核心引擎 · 零 UI 依赖)                    │
-│  ├─ Channels     : 串口 / 虚拟MCU源 / TCP C&S / UDP / HTTP S&C / MQTT Broker│
+│  ├─ Devices      : 串口 / 虚拟MCU源 / TCP C&S / UDP / HTTP S&C / MQTT Broker│
 │  ├─ RawDataBus   : 有界异步队列一对多广播总线（Worker 隔离 + 背压策略）       │
 │  ├─ Protocols    : Roslyn .cs 热编译器 + Binary/Text SDK + 沙箱测试引擎    │
 │  ├─ Pipeline     : 内存环形日志队列 + 异步磁盘落盘 + 30fps 遥测聚合器         │
@@ -243,22 +243,21 @@ LinkStudio/
 │   │   │       ├── MqttPacketMeta.cs
 │   │   │       ├── NetworkPacketMeta.cs
 │   │   │       └── RemoteEndpoint.cs
-│   │   ├── Channels/
-│   │   │   ├── IChannel.cs                    # 统一通道契约与统计指标
-│   │   │   ├── ChannelManager.cs              # 通道生命周期与路由管理
+│   │   ├── Devices/
+│   │   │   ├── ICommunicationDevice.cs        # 统一设备契约：打开、关闭、发送与状态
 │   │   │   ├── Serial/
-│   │   │   │   ├── ISerialPortDevice.cs       # 复用：串口设备契约
-│   │   │   │   ├── SerialPortDevice.cs        # 复用：单 Worker Channel<SerialCommand> 串行命令队列 + 优雅排空
-│   │   │   │   ├── SerialCommand.cs           # 复用：Open/Close/Write/ReadAvailable 不可变命令
-│   │   │   │   ├── SerialConnectionService.cs # 复用：连接协调 + 拔线检测 + Closed/ConnectionLost 事件
-│   │   │   │   ├── IDeviceChangeMonitor.cs    # 复用：跨平台串口热插拔与枚举接口
-│   │   │   │   └── SerialChannel.cs           # IChannel 适配器（含 DTR/RTS 控制）
+│   │   │   │   ├── ISerialPortDevice.cs       # 串口设备契约
+│   │   │   │   ├── SerialPortDevice.cs        # 单命令 Worker 串行执行 Open/Close/Write/Read
+│   │   │   │   └── SerialCommand.cs           # 串口不可变命令
 │   │   │   ├── Virtual/
-│   │   │   │   └── VirtualMcuChannel.cs       # 内置虚拟 MCU（M1 交付：无板可完整联调）
-│   │   │   ├── Tcp/                           # M4: TcpClientChannel / TcpServerChannel
-│   │   │   ├── Udp/                           # M4: UdpChannel
-│   │   │   ├── Http/                          # M4: HttpMockServerChannel / SimpleHttpClient
-│   │   │   └── Mqtt/                          # M4: MqttBrokerChannel (MQTTnet)
+│   │   │   │   ├── VirtualMcuDevice.cs        # 对外 API、队列创建与确定性释放
+│   │   │   │   ├── VirtualMcuDevice.CommandWorker.cs # 命令顺序、定时器与回执处理
+│   │   │   │   ├── VirtualMcuDevice.PublishWorker.cs # 4096 包缓存与 Bus 发布
+│   │   │   │   └── VirtualMcuCommand.cs       # Open/Close/Send/Tick 不可变命令
+│   │   │   ├── Tcp/                           # M4: TcpClientDevice / TcpServerDevice
+│   │   │   ├── Udp/                           # M4: UdpDevice
+│   │   │   ├── Http/                          # M4: HttpMockServerDevice / SimpleHttpClient
+│   │   │   └── Mqtt/                          # M4: MqttBrokerDevice (MQTTnet)
 │   │   ├── Helpers/
 │   │   │   └── DataHelper.cs                  # 复用：宽容版 TryParseHex 与中文错误提示
 │   │   ├── Sending/
@@ -459,6 +458,8 @@ namespace LinkStudio.Core.Bus
 
 当单个 `Wait` 订阅的邮箱满载时，调度 Worker 会等它腾出容量。等待期间其他订阅的后续投递也可能延迟。若入口队列随之填满，`PublishAsync` 同样会等待。总线与订阅分别提供当前深度、观测到的高水位、丢弃数和背压次数。
 
+每个实际设备可在自身命令/I/O Worker 与 `RawDataBus` 之间设置一个有界发布缓存。设备 Worker 只把独立的数据包放入缓存，发布 Worker 再等待 `PublishAsync`。它能吸收短时背压，但缓存满后仍必须等待或按明确策略丢弃，不能用无限队列隐藏持续过载。M1 的虚拟 MCU 使用 4096 包缓存验证这条路径。
+
 M1 阶段采用“**入口单次归属拷贝、广播阶段零拷贝**”：通道把驱动/网络缓冲区复制到独立 `byte[]`，封装为 `ReadOnlyMemory<byte>` 后把逻辑所有权交给总线；该数组入队后任何一方都不得修改。多个订阅者共享只读载荷，由 GC 自动保证存活时间。只有性能数据证明分配成为瓶颈后，才允许引入 `ArrayPool<byte>` / `IMemoryOwner<byte>`，并且必须同时实现明确的引用计数和归还协议，禁止把池化内存直接排入异步队列后立即归还。
 
 ### 4.5 高波特率防卡顿与并发保护机制
@@ -637,34 +638,30 @@ public sealed class MotorProto : BinaryProtocolBase
 
 ---
 
-## 6. 多通道通信模块设计
+## 6. 多设备通信模块设计
 
-### 6.1 统一通道接口（`IChannel`）
+### 6.1 统一设备接口（`ICommunicationDevice`）
 
 ```csharp
-public interface IChannel : IAsyncDisposable
+public interface ICommunicationDevice : IAsyncDisposable
 {
     string Id { get; }
     string Name { get; }
     ChannelKind Kind { get; }
     bool IsOpen { get; }
-    ChannelStats Stats { get; }
-
     Task OpenAsync(CancellationToken ct = default);
     Task CloseAsync();
-    Task SendAsync(ReadOnlyMemory<byte> data, SendOptions? options = null, CancellationToken ct = default);
-
-    event Action<ChannelStateChangedEvent>? StateChanged;
+    Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default);
 }
 ```
-所有通道在打开、关闭与收发数据时均向 `IRawDataBus` 投递 `RawDataPacket`（包含 `Rx` 与 `Tx` 两个方向），从而实现**串口、网络、虚拟 MCU 共享同一套日志终端、协议解析与仪表盘**。
+所有设备在打开、关闭与收发数据时均向 `IRawDataBus` 投递 `RawDataPacket`（包含 `Rx` 与 `Tx` 两个方向），从而实现**串口、网络、虚拟 MCU 共享同一套日志终端、协议解析与仪表盘**。`RawDataPacket.ChannelId` 仍表示逻辑数据源 ID，不要求项目中必须存在同名的 `Channel` 类层。
 
-### 6.2 通道家族规划
+### 6.2 设备家族规划
 
-| 通道类型 | 交付里程碑 | 核心能力与平台细节 |
+| 设备类型 | 交付里程碑 | 核心能力与平台细节 |
 | :--- | :---: | :--- |
-| **SerialChannel (串口主力)** | **M1** | 默认波特率 **`1,000,000` (1 Mbps)**，支持自定义波特率、数据位/停止位/校验位、流控与 DTR/RTS 实时控制；底层复用 `SerialPortDevice` 单 Worker 命令队列与 `SerialConnectionService` 拔线检测；Windows 复用 `HwndSource` (`WM_DEVICECHANGE`) 零依赖监听热插拔；macOS 扫描并过滤 `/dev/cu.*` 节点防止 `tty.*` 阻塞。 |
-| **VirtualMcuChannel (虚拟硬件源)** | **M1** | 内置软件仿真 MCU 节点：按固定周期向总线吐出符合 `MotorProto`、`BmsProto` 的二进制状态帧和 `McuLog` 文本行，且收到上位机发来的 `set_rpm` / `estop` 二进制帧后真实改变仿真转速/电流波形，实现“零硬件即可验证全链路”。 |
+| **SerialPortDevice (串口主力)** | **M1** | 默认波特率 **`1,000,000` (1 Mbps)**，支持自定义波特率、数据位/停止位/校验位、流控与 DTR/RTS 实时控制；使用单命令 Worker 保证设备操作顺序，并通过独立发布缓存 Worker 接入总线。 |
+| **VirtualMcuDevice (虚拟硬件源)** | **M1** | 结构与真实设备一致：命令 Worker 处理 Open/Close/Send/Tick，4096 包有界发布缓存 Worker 接入总线；后续增加符合 `MotorProto`、`BmsProto` 的二进制状态帧和命令状态变化，实现“零硬件即可验证全链路”。 |
 | **TcpClient / TcpServer** | **M4** | Client 支持断线重连选项；Server 支持多客户端连接管理列表，支持界面勾选向指定单个客户端发送或广播给全部在线客户端。 |
 | **UdpChannel** | **M4** | 支持指定本地绑定端口、单播目标 `IP:Port` 以及局域网广播地址（`255.255.255.255`）。 |
 | **HttpMockServerChannel & SimpleHttpClient** | **M4** | 动态拉起独立的 Kestrel 监听实例（与主程序端口彻底隔离），可配多条 Mock 路由（Method、Path、状态码、响应头/体、可选模拟延迟），所有入站请求的 Body 无论文本还是二进制字节流均直通 `RawDataBus`，并记录完整请求头/体抓包详情；附带简洁 HTTP Client 用于主动发测试请求。 |
@@ -832,7 +829,7 @@ public interface IChannel : IAsyncDisposable
 
 | 阶段 | 核心交付范围 | 验收标准（DoD） |
 | :--- | :--- | :--- |
-| **M1 · 工程骨架 + 串口核心 MVP** | 建好 `.sln` 四工程结构、暗黑/浅色窗体壳、`RawDataBus` 有界输入队列、调度 Worker 与订阅者独立邮箱；复用 `SerialLink` 核心（`SerialPortDevice`、`SerialConnectionService`、`HwndSource` 热插拔、`DataHelper`、`AtomicJsonStore`、`SendPayloadBuilder`、`PresetCycleSender`）；默认 `1,000,000` 波特率、4 种换行符显示模式、清空计数开关、实时异步落盘、串口参数与预设持久化及 `VirtualMcuChannel` | Windows WPF 窗口启动即用；拔插串口自动刷新并处理断线；`Hex/\r/\n` 双向无损切换、多预设 `Seq` 循环发送与实时落盘正常；协议、日志与 UI 消费者在独立 Worker 中运行并具备可验证的背压策略；1M 波特率虚拟 MCU / 真实串口连续收发不卡顿；macOS `Server` 入口与核心复用测试全部通过 |
+| **M1 · 工程骨架 + 串口核心 MVP** | 建好 `.sln` 四工程结构、暗黑/浅色窗体壳、`RawDataBus` 有界输入队列、调度 Worker 与订阅者独立邮箱；复用 `SerialLink` 核心（`SerialPortDevice`、`SerialConnectionService`、`HwndSource` 热插拔、`DataHelper`、`AtomicJsonStore`、`SendPayloadBuilder`、`PresetCycleSender`）；默认 `1,000,000` 波特率、4 种换行符显示模式、清空计数开关、实时异步落盘、串口参数与预设持久化及 `VirtualMcuDevice` | Windows WPF 窗口启动即用；拔插串口自动刷新并处理断线；`Hex/\r/\n` 双向无损切换、多预设 `Seq` 循环发送与实时落盘正常；协议、日志与 UI 消费者在独立 Worker 中运行并具备可验证的背压策略；1M 波特率虚拟 MCU / 真实串口连续收发不卡顿；macOS `Server` 入口与核心复用测试全部通过 |
 | **M2 · 面向 MCU 的协议引擎** | `BinaryProtocolBase`、`CrcLib`、`FrameBuilder`、`BitReader`、`ByteUnescaper`、`TextLineProtocol`、Roslyn `.cs` 热编译与 `CollectibleProtoContext`、终端帧展开卡、协议工坊沙箱、xUnit 核心测试集 | 修改 `protocols/MotorProto.cs` 点热重载无需重启即可生效；故意写错语法能精确返回行号且旧协议继续工作；同一串口同时勾选 `MotorProto` + `BmsProto` + `McuLog` 并行解包不串帧；`Core.Tests` 粘包/半包/错位/CRC 用例 100% 通过 |
 | **M3 · 自由拖拽工作台与方案持久化** | `<DashboardGrid>` (`GridStack.js`)、`<WaveformChart>` (`uPlot`)、9 种内置 Widget 组件、`ProfileRepository` 方案 JSON 导入导出 | 编辑/锁定模式丝滑切换；卡片自由拖拽缩放且刷新/重启后布局完全恢复；滑块/按钮能调用 `IProtocol.Encode` 真实封包下发；多通道波形 30fps 流畅运行并可导出 CSV |
 | **M4 · 本地网络服务端与客户端全家桶** | `TcpClient/Server`、`UdpChannel`、`HttpMockServerChannel` + 极简 HTTP Client、`MqttBrokerChannel` (`MQTTnet`) 与 `ServersPage` 完整监控面板 | 外部设备/测试脚本连入本机 `1883` MQTT Broker 与 `8080` HTTP Mock Server 后，二进制与 JSON 上报内容能自动进入 `RawDataBus`，由 M2 协议解析并直接驱动 M3 波形与仪表盘；支持从界面反向 Publish / Mock 回复 |
@@ -841,7 +838,7 @@ public interface IChannel : IAsyncDisposable
 
 ## 10. 关键工程风险与防护策略
 
-1. **串口句柄占用与异常断线**：在 `App.OnExit` 与 WPF `Closing` 中统一执行 `ChannelManager.DisposeAllAsync()` 并设置超时保护，防止串口驱动在程序退出后被内核挂死；USB 突然拔出时捕获 `IOException` / `UnauthorizedAccessException` 自动降级状态并停止定时发送，不弹窗崩溃。
+1. **串口句柄占用与异常断线**：在 `App.OnExit` 与 WPF `Closing` 中统一执行 `DeviceManager.DisposeAllAsync()` 并设置超时保护，防止串口驱动在程序退出后被内核挂死；USB 突然拔出时捕获 `IOException` / `UnauthorizedAccessException` 自动降级状态并停止定时发送，不弹窗崩溃。
 2. **Roslyn 热加载内存泄漏（重点）**：动态编译出的 `IProtocol` 实例运行在可卸载 `AssemblyLoadContext` 中。`RawDataBus`、`FrameHistoryStore` 和 `LinkStudio.UI` **严禁** 直接保存来自动态程序集的类型引用（例如直接把动态 `struct` 对象传给 UI）；`IProtocolSink` 只接收由 `LinkStudio.Core` 定义的标准不可变 DTO（`DecodedFrameResult` / `double` / `string`），确保热重载后 GC 能彻底回收旧程序集。
 3. **高波特率 UI 卡顿与内存膨胀**：后台 `TerminalLogBuffer` 强制有界环形覆盖，UI 侧严格 30fps 节流批刷 + `<Virtualize>`；在 Blazor Server（macOS 模式）中显式调大 `HubOptions.MaximumReceiveMessageSize` 防止长帧日志详情展开时断链。
 4. **macOS 串口节点阻塞**：macOS 上禁用打开 `/dev/tty.*`（会阻塞等待 DCD 信号），发现服务严格过滤仅暴露 `/dev/cu.*` 节点。
@@ -857,7 +854,7 @@ public interface IChannel : IAsyncDisposable
 
 | 复用等级 | 原文件 / 模块 | 新项目归属与改造方式 |
 | :--- | :--- | :--- |
-| **🟡 演化升级** | `Devices/ISerialPortDevice.cs`、`SerialPortDevice.cs`、`Models/SerialCommand.cs` | 迁入 `LinkStudio.Core/Channels/Serial/`，保留单 Worker 串行命令模型；将无界队列改为有界 `Channel`，把 `IsOpen` 改为 Worker 更新的线程安全状态快照，补齐 `IAsyncDisposable` 确定性排空、DTR/RTS 控制，并外包 `SerialChannel : IChannel`；注释统一使用“Worker Task”而非暗示固定线程 |
+| **🟡 演化升级** | `Devices/Serial/ISerialPortDevice.cs`、`SerialPortDevice.cs`、`SerialCommand.cs` | 保留单 Worker 串行命令模型；将无界队列改为有界 `Channel`，把 `IsOpen` 改为 Worker 更新的线程安全状态快照，补齐 `IAsyncDisposable` 确定性排空、DTR/RTS 控制，并增加接入 `RawDataBus` 的有界发布缓存 Worker；注释统一使用“Worker Task”而非暗示固定线程 |
 | **🟢 直接复用** | `Services/.../SerialConnectionService.cs`、`Models/SerialPortConfig.cs`、`SerialFrame.cs` | 迁入 `LinkStudio.Core`，保留拔线检测幂等置空与 `ConnectionLost`/`Closed` 契约 |
 | **🟢 演化升级** | `Services/.../SerialReceiveWorker.cs`、`DefaultDataParse.cs`、`IDataParse.cs` | `SerialReceiveWorker` 的零空转等待演化为通道异步读取循环与 `RawDataBus` 有界队列；`DefaultDataParse`（`\r\n` + 30ms 静默窗口 + 64KB 上限）演化为拥有独立邮箱的内置 `TextLineProtocol` |
 | **🟢 直接复用** | `Helper/DataHelper.cs` | 迁入 `LinkStudio.Core/Helpers/`，继续作为全项目唯一的宽容 HEX 解析与中文报错实现 |

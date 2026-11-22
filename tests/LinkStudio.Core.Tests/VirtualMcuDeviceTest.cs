@@ -1,5 +1,5 @@
 using LinkStudio.Core.Bus;
-using LinkStudio.Core.Channels;
+using LinkStudio.Core.Devices.Virtual;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,66 +10,66 @@ using Xunit;
 
 namespace LinkStudio.Core.Tests
 {
-    public sealed class VirtualMcuChannelTest
+    public sealed class VirtualMcuDeviceTest
     {
         [Fact]
         public async Task OpenAsync_PublishReadPacket()
         {
             await using var bus = new RawDataBus();
-            await using var channel = new VirtualMcuChannel(bus);
+            await using var device = new VirtualMcuDevice(bus);
 
             var received = new TaskCompletionSource<RawDataPacket>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
 
-            await using var subscription = bus.Subscribe(new(channel.Id), (packet, _) =>
+            await using var subscription = bus.Subscribe(new(device.Id), (packet, _) =>
             {
                 received.TrySetResult(packet);
                 return ValueTask.CompletedTask;
             });
 
-            await channel.OpenAsync();
+            await device.OpenAsync();
 
             var packet = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-            Assert.True(channel.IsOpen);
+            Assert.True(device.IsOpen);
             Assert.Equal(PacketDirection.Rx, packet.Direction);
-            Assert.Equal("Virtual MCU Channel ready", Encoding.UTF8.GetString(packet.Payload.Span));
+            Assert.Equal("Virtual MCU ready", Encoding.UTF8.GetString(packet.Payload.Span));
         }
 
         [Fact]
         public async Task OpenAsync_PublishesReadyThenTick()
         {
             await using var bus = new RawDataBus();
-            await using var channel = new VirtualMcuChannel(bus);
+            await using var device = new VirtualMcuDevice(bus);
             var packets = Channel.CreateBounded<RawDataPacket>(4);
 
             await using var subscription = bus.Subscribe(
-                new(channel.Id),
+                new(device.Id),
                 (packet, ct) => packets.Writer.WriteAsync(packet, ct));
 
-            await channel.OpenAsync();
+            await device.OpenAsync();
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var first = await packets.Reader.ReadAsync(timeout.Token);
             var second = await packets.Reader.ReadAsync(timeout.Token);
 
-            await channel.CloseAsync();
+            await device.CloseAsync();
 
-            Assert.Equal("Virtual MCU Channel ready", Encoding.UTF8.GetString(first.Payload.Span));
+            Assert.Equal("Virtual MCU ready", Encoding.UTF8.GetString(first.Payload.Span));
             Assert.Equal("Virtual MCU tick", Encoding.UTF8.GetString(second.Payload.Span));
             Assert.Equal(first.SeqNo + 1u, second.SeqNo);
-            Assert.False(channel.IsOpen);
+            Assert.False(device.IsOpen);
         }
 
         [Fact]
         public async Task SendAsync_PublishesBytesAsTxThenRx()
         {
             await using var bus = new RawDataBus();
-            await using var channel = new VirtualMcuChannel(bus);
+            await using var device = new VirtualMcuDevice(bus);
             var received = new List<RawDataPacket>();
             var payload = new byte[] { 0x00, 0xFF };
 
-            await using var subscription = bus.Subscribe(new(channel.Id), (packet, _) =>
+            await using var subscription = bus.Subscribe(new(device.Id), (packet, _) =>
             {
                 if (packet.Payload.Span.SequenceEqual(payload))
                 {
@@ -80,9 +80,9 @@ namespace LinkStudio.Core.Tests
             });
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await channel.OpenAsync(timeout.Token);
-            await channel.SendAsync(payload, timeout.Token);
-            await channel.CloseAsync();
+            await device.OpenAsync(timeout.Token);
+            await device.SendAsync(payload, timeout.Token);
+            await device.CloseAsync();
 
             // 排空总线后再读取列表，确保订阅 Worker 已处理两包。
             await bus.DisposeAsync();
@@ -97,13 +97,13 @@ namespace LinkStudio.Core.Tests
         public async Task SendAsync_RejectsRequestsAfterClose()
         {
             await using var bus = new RawDataBus();
-            await using var channel = new VirtualMcuChannel(bus);
+            await using var device = new VirtualMcuDevice(bus);
 
-            await channel.OpenAsync();
-            await channel.CloseAsync();
+            await device.OpenAsync();
+            await device.CloseAsync();
 
             await Assert.ThrowsAsync<InvalidOperationException>(
-                () => channel.SendAsync(new byte[] { 0x01 }));
+                () => device.SendAsync(new byte[] { 0x01 }));
         }
     }
 }
