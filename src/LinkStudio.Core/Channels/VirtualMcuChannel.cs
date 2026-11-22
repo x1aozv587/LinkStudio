@@ -1,8 +1,9 @@
-﻿using LinkStudio.Core.Bus;
+using LinkStudio.Core.Bus;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace LinkStudio.Core.Channels
@@ -18,6 +19,7 @@ namespace LinkStudio.Core.Channels
         private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
         private CancellationTokenSource? _sendCancellation;
         private volatile Task? _sendTask;
+        private volatile Channel<SendRequest>? _sendRequests;
         private bool _disposed;
 
         public bool IsOpen => _sendTask is { IsCompleted: false };
@@ -25,6 +27,9 @@ namespace LinkStudio.Core.Channels
         private readonly IRawDataBus _dataBus;
 
         private uint _seq;
+
+        private sealed record SendRequest(
+            byte[] Payload, CancellationToken CancellationToken, TaskCompletionSource Completion);
 
         public VirtualMcuChannel(IRawDataBus bus)
         {
@@ -47,9 +52,16 @@ namespace LinkStudio.Core.Channels
                 await StopSendingAsync();
                 ct.ThrowIfCancellationRequested();
 
+                var requests = Channel.CreateBounded<SendRequest>(new BoundedChannelOptions(16)
+                {
+                    SingleReader = true,
+                    FullMode = BoundedChannelFullMode.Wait
+                });
+
                 var cancellation = new CancellationTokenSource();
                 _sendCancellation = cancellation;
-                _sendTask = Task.Run(() => SendLoopAsync(cancellation.Token));
+                _sendRequests = requests;
+                _sendTask = Task.Run(() => SendLoopAsync(requests, cancellation.Token));
             }
             finally
             {
@@ -68,6 +80,22 @@ namespace LinkStudio.Core.Channels
             {
                 _lifecycleGate.Release();
             }
+        }
+
+        // 请求入队与发送完成是两个阶段。回执由唯一的发包 Worker 完成。
+        public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var requests = _sendRequests
+                ?? throw new InvalidOperationException("请先打开虚拟设备。");
+
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var request = new SendRequest(data.ToArray(), ct, completion);
+            using var cancellation = ct.Register(() => completion.TrySetCanceled(ct));
+
+            await requests.Writer.WriteAsync(request, ct);
+            await completion.Task;
         }
 
         public async ValueTask DisposeAsync()
@@ -96,6 +124,7 @@ namespace LinkStudio.Core.Channels
 
             try
             {
+                _sendRequests = null;
                 cancellation.Cancel();
                 await sendTask;
             }
@@ -107,36 +136,121 @@ namespace LinkStudio.Core.Channels
             }
         }
 
-        private async Task SendLoopAsync(CancellationToken ct)
+        private async Task SendLoopAsync(Channel<SendRequest> requests, CancellationToken ct)
         {
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            Exception? failure = null;
 
             try
             {
-                await PublishPacketAsync("Virtual MCU Channel ready", ct);
+                await PublishPacketAsync(
+                    PacketDirection.Rx, Encoding.UTF8.GetBytes("Virtual MCU Channel ready"), ct);
 
-                while (await timer.WaitForNextTickAsync(ct))
+                // 定时器和队列各保留一个等待，只有消费了结果才创建下一次等待。
+                var nextTick = timer.WaitForNextTickAsync(ct).AsTask();
+                var requestReady = requests.Reader.WaitToReadAsync(ct).AsTask();
+
+                while (true)
                 {
-                    await PublishPacketAsync("Virtual MCU tick", ct);
+                    await Task.WhenAny(nextTick, requestReady);
+                    ct.ThrowIfCancellationRequested();
+
+                    if (nextTick.IsCompleted)
+                    {
+                        if (!await nextTick)
+                        {
+                            break;
+                        }
+
+                        await PublishPacketAsync(
+                            PacketDirection.Rx, Encoding.UTF8.GetBytes("Virtual MCU tick"), ct);
+                        nextTick = timer.WaitForNextTickAsync(ct).AsTask();
+                    }
+
+                    if (requestReady.IsCompleted)
+                    {
+                        if (!await requestReady)
+                        {
+                            break;
+                        }
+
+                        if (requests.Reader.TryRead(out var request))
+                        {
+                            await EchoAsync(request, ct);
+                        }
+
+                        requestReady = requests.Reader.WaitToReadAsync(ct).AsTask();
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // 正常停止时，取消令牌会打断定时等待或总线入队等待。
+                // 停止时会打断定时等待、命令等待或总线入队等待。
+            }
+            catch (Exception error)
+            {
+                failure = error;
+                throw;
+            }
+            finally
+            {
+                // 先结束入队等待，再结清已入队但尚未处理的回执。
+                requests.Writer.TryComplete();
+                while (requests.Reader.TryRead(out var remaining))
+                {
+                    if (failure is null)
+                    {
+                        remaining.Completion.TrySetCanceled(ct);
+                    }
+                    else
+                    {
+                        remaining.Completion.TrySetException(failure);
+                    }
+                }
             }
         }
 
-        /// 发送方法
-        /// 
-        private async Task PublishPacketAsync(string message, CancellationToken ct)
+        private async Task EchoAsync(SendRequest request, CancellationToken workerToken)
+        {
+            if (request.CancellationToken.IsCancellationRequested)
+            {
+                request.Completion.TrySetCanceled(request.CancellationToken);
+                return;
+            }
+
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                workerToken, request.CancellationToken);
+
+            try
+            {
+                await PublishPacketAsync(PacketDirection.Tx, request.Payload, cancellation.Token);
+                await PublishPacketAsync(PacketDirection.Rx, request.Payload, cancellation.Token);
+                request.Completion.TrySetResult();
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                var canceledToken = workerToken.IsCancellationRequested
+                    ? workerToken
+                    : request.CancellationToken;
+                request.Completion.TrySetCanceled(canceledToken);
+            }
+            catch (Exception error)
+            {
+                request.Completion.TrySetException(error);
+                throw;
+            }
+        }
+
+        private async Task PublishPacketAsync(
+            PacketDirection direction, ReadOnlyMemory<byte> payload, CancellationToken ct)
         {
             var packet = new RawDataPacket(
                 ChannelId: Id,
                 ChannelKind: Kind,
-                Direction: PacketDirection.Rx,
+                Direction: direction,
                 TimestampMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 SeqNo: _seq,
-                Payload: Encoding.UTF8.GetBytes(message));
+                Payload: payload);
 
             await _dataBus.PublishAsync(packet, ct);
             _seq++;

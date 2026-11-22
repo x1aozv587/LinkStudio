@@ -19,11 +19,11 @@
         <div class="wb-virtual-terminal-output wb-mono">
             @if (_messages.Count == 0)
             {
-                <p class="wb-muted">启动后将在这里显示接收到的数据。</p>
+                <p class="wb-muted">启动后将在这里显示收发记录。</p>
             }
             else
             {
-                <ol aria-label="最近收到的数据，最新在前">
+                <ol aria-label="最近收发记录，最新在前">
                     @foreach (var message in _messages.Reverse())
                     {
                         <li>@message</li>
@@ -31,6 +31,22 @@
                 </ol>
             }
         </div>
+        <form class="wb-virtual-terminal-send" @onsubmit="SendTextAsync" @onsubmit:preventDefault>
+            <label for="virtual-terminal-text">发送内容</label>
+            <div class="wb-virtual-terminal-send-row">
+                <input id="virtual-terminal-text" class="wb-mono" type="text"
+                       @bind="_draft" @bind:event="oninput"
+                       disabled="@(_isChanging || _channel?.IsOpen != true)" />
+                <button type="submit" class="wb-virtual-terminal-button" disabled="@(!CanSend)">
+                    @(_isSending ? "发送中…" : "发送")
+                </button>
+            </div>
+
+            @if (_sendError is not null)
+            {
+                <p class="wb-virtual-terminal-send-error" role="alert">@_sendError</p>
+            }
+        </form>
     </section>
 </div>
 
@@ -43,6 +59,13 @@
     private string _status = "未启动";
     private bool _isChanging;
     private bool _disposed;
+
+    private string _draft = string.Empty;
+    private string? _sendError;
+    private bool _isSending;
+
+    private bool CanSend => !_disposed && !_isChanging && !_isSending
+        && _channel?.IsOpen == true && !string.IsNullOrWhiteSpace(_draft);
 
     private Task ToggleAsync()
     {
@@ -64,6 +87,7 @@
             if (_channel is null)
             {
                 _status = "正在启动…";
+                _sendError = null;
                 await StartAsync();
                 _status = "运行中";
             }
@@ -104,6 +128,46 @@
         {
             await StopAsync();
             throw;
+        }
+    }
+
+    private async Task SendTextAsync()
+    {
+        var channel = _channel;
+        if (channel is null || !CanSend)
+        {
+            return;
+        }
+
+        var text = _draft;
+        _isSending = true;
+        _sendError = null;
+
+        try
+        {
+            // 界面把文字编码为字节，发送与回显记录由总线订阅回调显示。
+            await channel.SendAsync(Encoding.UTF8.GetBytes(text));
+
+            if (!_disposed && ReferenceEquals(_channel, channel) && _draft == text)
+            {
+                _draft = string.Empty;
+            }
+        }
+        catch (OperationCanceledException) when (!ReferenceEquals(_channel, channel))
+        {
+            // 停止设备时，旧会话中尚未完成的发送请求会被取消。
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Error(error, "发送数据到虚拟设备失败");
+            if (!_disposed && ReferenceEquals(_channel, channel))
+            {
+                _sendError = "发送失败，请重试。";
+            }
+        }
+        finally
+        {
+            _isSending = false;
         }
     }
 
