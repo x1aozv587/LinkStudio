@@ -1,61 +1,173 @@
 @using System.Text
 @using LinkStudio.Core.Bus
 @using LinkStudio.Core.Channels
+@implements IAsyncDisposable
 
 <div class="wb-shell-skeleton">
-    <div class="wb-skeleton-card">
-        <h1 style="margin: 0 0 8px 0; font-size: 20px;">
-            <span class="wb-accent-cyan">@LinkStudioMetadata.AppName</span>
-        </h1>
-        <p class="wb-mono wb-muted" style="margin: 0;">
-            M1.1 骨架已就绪 · v@(LinkStudioMetadata.Version)
-        </p>
-        <button type="button" @onclick="ShowVirtualPacketAsync" disabled="@_isWaiting">
-            测试虚拟设备
-        </button>
-        <p class="wb-mono" role="status">@_message</p>
-    </div>
+    <section class="wb-skeleton-card wb-virtual-terminal" aria-labelledby="virtual-terminal-title">
+        <header class="wb-virtual-terminal-header">
+            <div>
+                <h1 id="virtual-terminal-title" class="wb-accent-cyan">虚拟设备终端</h1>
+                <p class="wb-muted" role="status">@_status</p>
+            </div>
+            <button type="button" class="wb-virtual-terminal-button"
+                    @onclick="ToggleAsync" disabled="@_isChanging">
+                @(_channel is null ? "启动虚拟设备" : "停止虚拟设备")
+            </button>
+        </header>
+
+        <div class="wb-virtual-terminal-output wb-mono">
+            @if (_messages.Count == 0)
+            {
+                <p class="wb-muted">启动后将在这里显示接收到的数据。</p>
+            }
+            else
+            {
+                <ol aria-label="最近收到的数据，最新在前">
+                    @foreach (var message in _messages.Reverse())
+                    {
+                        <li>@message</li>
+                    }
+                </ol>
+            }
+        </div>
+    </section>
 </div>
 
 @code {
-    private string _message = "等待启动";
-    private bool _isWaiting;
+    private const int MessageLimit = 50;
+    private readonly Queue<string> _messages = new(MessageLimit);
+    private RawDataBus? _bus;
+    private VirtualMcuChannel? _channel;
+    private Task? _transition;
+    private string _status = "未启动";
+    private bool _isChanging;
+    private bool _disposed;
 
-    private async Task ShowVirtualPacketAsync()
+    private Task ToggleAsync()
     {
-        if (_isWaiting)
+        if (_disposed || _isChanging)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        _isWaiting = true;
-        _message = "等待数据包…";
+        _transition = ChangeSessionAsync();
+        return _transition;
+    }
+
+    private async Task ChangeSessionAsync()
+    {
+        _isChanging = true;
 
         try
         {
-            await using var bus = new RawDataBus();
-            await using var channel = new VirtualMcuChannel(bus);
-            var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            // 通道打开时就会发出第一包，因此要先订阅。
-            await using var subscription = bus.Subscribe(new(channel.Id), (packet, _) =>
+            if (_channel is null)
             {
-                received.TrySetResult(Encoding.UTF8.GetString(packet.Payload.Span));
-                return ValueTask.CompletedTask;
-            });
-
-            await channel.OpenAsync();
-
-            // 由按钮事件在 Blazor 渲染上下文里更新界面。
-            _message = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                _status = "正在启动…";
+                await StartAsync();
+                _status = "运行中";
+            }
+            else
+            {
+                _status = "正在停止…";
+                await StopAsync();
+                _status = "已停止";
+            }
         }
-        catch (TimeoutException)
+        catch (Exception error)
         {
-            _message = "两秒内未收到数据包";
+            Serilog.Log.Error(error, "切换虚拟设备运行状态失败");
+            _status = "虚拟设备运行失败";
         }
         finally
         {
-            _isWaiting = false;
+            _isChanging = false;
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        var bus = new RawDataBus();
+        var channel = new VirtualMcuChannel(bus);
+        _bus = bus;
+        _channel = channel;
+
+        try
+        {
+            // 打开通道就会收到第一包，所以先订阅。总线负责关闭它创建的订阅。
+            bus.Subscribe(new(channel.Id, Capacity: MessageLimit, OverflowPolicy: RawDataOverflowPolicy.DropOldest),
+                (packet, _) => ShowPacketAsync(bus, packet));
+
+            await channel.OpenAsync();
+        }
+        catch
+        {
+            await StopAsync();
+            throw;
+        }
+    }
+
+    private ValueTask ShowPacketAsync(RawDataBus bus, RawDataPacket packet)
+    {
+        var text = Encoding.UTF8.GetString(packet.Payload.Span);
+
+        // 订阅回调由总线 Worker 执行。页面状态交给 Blazor 渲染上下文修改。
+        return new ValueTask(InvokeAsync(() =>
+        {
+            if (_disposed || !ReferenceEquals(_bus, bus))
+            {
+                return;
+            }
+
+            if (_messages.Count == MessageLimit)
+            {
+                _messages.Dequeue();
+            }
+
+            _messages.Enqueue($"[{packet.Direction} #{packet.SeqNo}] {text}");
+            StateHasChanged();
+        }));
+    }
+
+    private async Task StopAsync()
+    {
+        var channel = _channel;
+        var bus = _bus;
+
+        // 关闭前取消当前会话关联，忽略还没更新到页面的旧消息。
+        _channel = null;
+        _bus = null;
+
+        try
+        {
+            if (channel is not null)
+            {
+                await channel.DisposeAsync();
+            }
+        }
+        finally
+        {
+            if (bus is not null)
+            {
+                await bus.DisposeAsync();
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+
+        try
+        {
+            if (_transition is not null)
+            {
+                await _transition;
+            }
+        }
+        finally
+        {
+            await StopAsync();
         }
     }
 }
