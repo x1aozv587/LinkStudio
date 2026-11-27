@@ -1,43 +1,25 @@
-using System.Threading.Tasks;
-using LinkStudio.Core.Models;
-
 namespace LinkStudio.Core.Devices.Serial
 {
-    /// <summary>
-    /// 串口 Worker 要处理的所有命令的基类。
-    /// 用 record 是因为命令是"一次性的、不可变的消息"。
-    /// </summary>
-    public abstract record SerialCommand;
+    /// <summary>串口命令的基类。打开、关闭、发送和可读通知都由同一个 Worker 处理。</summary>
+    internal abstract record SerialCommand;
 
-    /// <summary>
-    /// 打开串口。
-    /// </summary>
-    /// <param name="Config">串口配置。</param>
-    /// <param name="Completion">命令的"回执单"，Worker 执行完后填结果。</param>
-    public sealed record OpenCommand(SerialPortConfig Config, TaskCompletionSource Completion) : SerialCommand;
-
-    /// <summary>
-    /// 关闭串口。
-    /// </summary>
-    public sealed record CloseCommand(TaskCompletionSource Completion) : SerialCommand;
-
-    /// <summary>
-    /// 写数据。
-    /// </summary>
-    /// <param name="Data">要发送的原始字节。</param>
-    /// <param name="Completion">命令的"回执单"，Worker 执行完后填结果。</param>
-    /// <param name="CancellationToken">
-    /// 调用方的取消令牌。Worker 在动手写之前用它判断命令是否已作废，已取消的直接跳过不写。
-    /// 注意：串口写一旦开始就无法中途收回，所以令牌只对"尚未开始"的写生效。
-    /// </param>
-    public sealed record WriteCommand(
-        byte[] Data,
+    /// <summary>按构造时保存的配置打开串口。命令 Worker 在调用同步 Open 前检查取消。</summary>
+    internal sealed record OpenSerialCommand(
         TaskCompletionSource Completion,
         CancellationToken CancellationToken) : SerialCommand;
 
+    /// <summary>关闭串口。发布 Worker 处理完此前入队的数据包后填写回执。</summary>
+    internal sealed record CloseSerialCommand(
+        TaskCompletionSource Completion) : SerialCommand;
+
     /// <summary>
-    /// 内部信号：串口有数据可读了，让 Worker 去读。
-    /// 不是外部入队的命令，所以没有 Completion。
+    /// 发送原始字节。Payload 是入队前复制的副本，发送成功时由发布 Worker 在 TX 包进入总线后填写回执。
     /// </summary>
-    public sealed record ReadAvailableCommand : SerialCommand;
+    internal sealed record SendSerialCommand(
+        byte[] Payload,
+        TaskCompletionSource Completion,
+        CancellationToken CancellationToken) : SerialCommand;
+
+    /// <summary>串口事件投递的可读通知。Worker 根据当前可读字节数读取，无需回执。</summary>
+    internal sealed record ReadAvailableSerialCommand : SerialCommand;
 }
