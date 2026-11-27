@@ -1,4 +1,4 @@
-namespace LinkStudio.Core.Devices.Virtual
+﻿namespace LinkStudio.Core.Devices.Virtual
 {
     /// <summary>
     /// 所有虚拟 MCU 命令的共同父类型。
@@ -35,4 +35,10 @@ namespace LinkStudio.Core.Devices.Virtual
     /// 定时器只产生命令，不直接修改设备状态，也不直接写入 Bus。
     /// </summary>
     internal sealed record TickVirtualMcuCommand : VirtualMcuCommand;
+
+    /// <summary>
+    /// 启动定时器定时发送测试数据
+    /// </summary>
+    internal sealed record AutoVirtualMcuCommand
+        ( bool enabled, UInt32 intervalMS, CancellationToken CancellationToken, TaskCompletionSource Completion) : VirtualMcuCommand;
 }

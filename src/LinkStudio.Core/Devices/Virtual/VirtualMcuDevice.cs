@@ -1,5 +1,6 @@
-using LinkStudio.Core.Bus;
+﻿using LinkStudio.Core.Bus;
 using System.Threading.Channels;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace LinkStudio.Core.Devices.Virtual
 {
@@ -97,6 +98,18 @@ namespace LinkStudio.Core.Devices.Virtual
 
             // 调用方可能复用原内存，所以入队前先复制一份。
             var command = new SendVirtualMcuCommand(data.ToArray(), completion, ct);
+            return EnqueueAndWaitAsync(command, completion, ct);
+        }
+
+        // 测试时使用这个接口开启虚拟串口的发送
+        public Task AutoSendAsync(bool enabled, UInt32 interval, CancellationToken ct = default )
+        {
+            ThrowIfDisposing();
+            ct.ThrowIfCancellationRequested();
+            var completion = CreateCompletion();
+
+            // 调用方可能复用原内存，所以入队前先复制一份。
+            var command = new AutoVirtualMcuCommand(enabled, interval, ct, completion);
             return EnqueueAndWaitAsync(command, completion, ct);
         }
 
