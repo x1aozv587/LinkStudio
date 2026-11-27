@@ -1,3 +1,5 @@
+using LinkStudio.Core.Services;
+using LinkStudio.Core.Services.Interfaces;
 using LinkStudio.UI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -6,6 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<IFolderPickerService, UnsupportedFolderPickerService>();
+builder.Services.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
 
 var app = builder.Build();
 

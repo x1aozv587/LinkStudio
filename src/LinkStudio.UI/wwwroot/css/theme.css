@@ -842,6 +842,19 @@ input[type="number"] {
     background: currentColor;
 }
 
+.ls-rec-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--ls-danger-soft);
+    border: 1px solid var(--ls-danger);
+    color: var(--ls-danger-text);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+}
+
 .ls-text-rx {
     color: var(--ls-rx);
     font-weight: 600;
