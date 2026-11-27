@@ -1,0 +1,260 @@
+@implements IAsyncDisposable
+
+<div class="ls-settings-layout">
+    <!-- 左侧分类目录：纯粹的 LinkStudio 全局设置 -->
+    <aside class="ls-settings-nav" aria-label="全局设置分类">
+        <h2 class="ls-settings-nav-title">全局设置</h2>
+        <p class="ls-scope-caption">管理 LinkStudio 全局外观与应用运行日志</p>
+
+        <nav class="ls-settings-nav-list">
+            @foreach (var item in _sections)
+            {
+                <button type="button"
+                        class="ls-settings-nav-item @(_activeSection == item.Id ? "is-active" : string.Empty)"
+                        @onclick="() => ScrollToSectionAsync(item.Id)">
+                    <span class="ls-settings-nav-dot"></span>
+                    <span>@item.Title</span>
+                </button>
+            }
+        </nav>
+    </aside>
+
+    <!-- 右侧连续滚动设置流 -->
+    <div class="ls-settings-content" @ref="_scrollContainerRef">
+        <div class="ls-settings-stream">
+            <!-- 1. 外观与主题 -->
+            <section class="ls-settings-section" data-settings-section="appearance">
+                <div class="ls-section-head">
+                    <h3>外观与主题</h3>
+                    <p>提供亮色、暖纸护眼与柔和暗色共 4 套主题，点击卡片立即切换。</p>
+                </div>
+
+                <div class="ls-theme-grid">
+                    @foreach (var theme in _themes)
+                    {
+                        var isSelected = Settings.Studio.Theme == theme.Theme;
+                        <button type="button"
+                                class="ls-theme-card @(isSelected ? "is-selected" : string.Empty)"
+                                @onclick="() => SelectTheme(theme.Theme)">
+                            <div class="ls-theme-swatch" style="background: @theme.BgCanvas; border-color: @theme.Border;">
+                                <div class="ls-swatch-rail" style="background: @theme.BgSurface;"></div>
+                                <div class="ls-swatch-body">
+                                    <span class="ls-swatch-bar" style="background: @theme.Accent; width: 42%;"></span>
+                                    <span class="ls-swatch-line" style="background: @theme.Text; opacity: 0.7; width: 78%;"></span>
+                                    <span class="ls-swatch-line" style="background: @theme.Rx; width: 62%;"></span>
+                                </div>
+                            </div>
+                            <div class="ls-theme-meta">
+                                <span class="ls-theme-name">@theme.Title</span>
+                                <span class="ls-theme-desc">@theme.Subtitle</span>
+                            </div>
+                        </button>
+                    }
+                </div>
+            </section>
+
+            <!-- 2. 应用运行日志（独立于串口收发日志） -->
+            <section class="ls-settings-section" data-settings-section="app-log">
+                <div class="ls-section-head">
+                    <h3>应用运行日志</h3>
+                    <p>记录 LinkStudio 自身的启动状态、异常堆栈与系统事件；串口收发数据日志请在串口终端右上角设置中单独配置。</p>
+                </div>
+
+                <div class="ls-settings-card">
+                    <div class="ls-setting-row">
+                        <div class="ls-setting-info">
+                            <span class="ls-setting-title">启动应用后自动保存运行日志</span>
+                            <span class="ls-setting-desc">开启后软件启动即自动记录运行日志，方便排查闪退或驱动异常。</span>
+                        </div>
+                        <label class="ls-switch">
+                            <input type="checkbox"
+                                   checked="@Settings.Studio.AutoSaveAppLogOnStartup"
+                                   @onchange="e => UpdateBool(v => Settings.Studio.AutoSaveAppLogOnStartup = v, e)" />
+                            <span class="ls-switch-track"></span>
+                        </label>
+                    </div>
+
+                    <div class="ls-setting-row ls-setting-row-stack">
+                        <div class="ls-setting-info">
+                            <span class="ls-setting-title">应用运行日志保存目录</span>
+                            <span class="ls-setting-desc">默认位于应用目录下的 logs\app，点击右侧按钮通过系统弹窗选择文件夹。</span>
+                        </div>
+                        <div class="ls-path-picker">
+                            <span class="ls-path-display ls-mono" title="@Settings.Studio.AppLogDirectory">
+                                @Settings.Studio.AppLogDirectory
+                            </span>
+                            <button type="button"
+                                    class="ls-btn-subtle"
+                                    disabled="@(!FolderPicker.IsSupported || _isPickingFolder)"
+                                    title="@(FolderPicker.IsSupported ? "选择日志保存文件夹" : "仅桌面端支持本地文件夹弹窗")"
+                                    @onclick="PickAppLogFolderAsync">
+                                选择文件夹…
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+</div>
+
+@code {
+    private sealed record SettingsSectionInfo(string Id, string Title);
+
+    private sealed record ThemeCardInfo(
+        AppTheme Theme,
+        string Title,
+        string Subtitle,
+        string BgCanvas,
+        string BgSurface,
+        string Border,
+        string Accent,
+        string Text,
+        string Rx);
+
+    private static readonly SettingsSectionInfo[] _sections =
+    [
+        new("appearance", "外观与主题"),
+        new("app-log", "应用运行日志")
+    ];
+
+    private static readonly ThemeCardInfo[] _themes =
+    [
+        new(AppTheme.Light, "晴空浅白", "清爽通透，现代桌面风", "#F6F8FB", "#FFFFFF", "#DDE3EC", "#2563EB", "#1E293B", "#059669"),
+        new(AppTheme.WarmPaper, "柔雾暖纸", "低蓝光米白，久看不刺眼", "#F6F3EC", "#FBF9F5", "#E4DDD0", "#C26D2D", "#2E2A25", "#2F7D57"),
+        new(AppTheme.SlateDark, "暮色石板", "柔和灰蓝暗色，克制耐看", "#181C24", "#202632", "#313A4B", "#60A5FA", "#E2E8F0", "#34D399"),
+        new(AppTheme.Midnight, "深邃极夜", "高对比深黑，夜间专注", "#0B0E14", "#121721", "#222C3C", "#38BDF8", "#E6EDF3", "#34D399")
+    ];
+
+    [Parameter, EditorRequired]
+    public WorkbenchSettings Settings { get; set; } = default!;
+
+    [Inject]
+    private IJSRuntime JS { get; set; } = default!;
+
+    [Inject]
+    private IFolderPickerService FolderPicker { get; set; } = default!;
+
+    private ElementReference _scrollContainerRef;
+    private IJSObjectReference? _jsModule;
+    private IJSObjectReference? _scrollSpy;
+    private DotNetObjectReference<SettingsView>? _dotNetRef;
+    private string _activeSection = "appearance";
+    private bool _isPickingFolder;
+    private bool _disposed;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                _jsModule = await JS.InvokeAsync<IJSObjectReference>(
+                    "import", "./_content/LinkStudio.UI/js/workbench.js");
+                _dotNetRef = DotNetObjectReference.Create(this);
+                _scrollSpy = await _jsModule.InvokeAsync<IJSObjectReference?>(
+                    "attachSettingsScrollSpy", _scrollContainerRef, _dotNetRef);
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Warning(error, "初始化设置页滚动联动脚本失败");
+            }
+        }
+    }
+
+    [JSInvokable]
+    public void OnActiveSectionChanged(string sectionId)
+    {
+        if (!_disposed && _activeSection != sectionId)
+        {
+            _activeSection = sectionId;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ScrollToSectionAsync(string sectionId)
+    {
+        _activeSection = sectionId;
+        if (_jsModule is not null)
+        {
+            try
+            {
+                await _jsModule.InvokeVoidAsync("scrollToSection", _scrollContainerRef, sectionId);
+            }
+            catch (JSDisconnectedException)
+            {
+                // 页面断开时忽略脚本调用异常。
+            }
+        }
+    }
+
+    private async Task PickAppLogFolderAsync()
+    {
+        if (_isPickingFolder || !FolderPicker.IsSupported)
+        {
+            return;
+        }
+
+        _isPickingFolder = true;
+        try
+        {
+            var selected = await FolderPicker.PickFolderAsync("选择应用运行日志保存目录", Settings.Studio.AppLogDirectory);
+            if (!string.IsNullOrWhiteSpace(selected))
+            {
+                Settings.Studio.AppLogDirectory = selected;
+                Settings.NotifyChanged();
+            }
+        }
+        finally
+        {
+            _isPickingFolder = false;
+        }
+    }
+
+    private void SelectTheme(AppTheme theme)
+    {
+        Settings.Studio.Theme = theme;
+        Settings.NotifyChanged();
+    }
+
+    private void UpdateBool(Action<bool> setter, ChangeEventArgs e)
+    {
+        if (e.Value is bool value)
+        {
+            setter(value);
+            Settings.NotifyChanged();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+
+        if (_scrollSpy is not null)
+        {
+            try
+            {
+                await _scrollSpy.InvokeVoidAsync("dispose");
+                await _scrollSpy.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // 页面断开时无需释放前端监听器。
+            }
+        }
+
+        if (_jsModule is not null)
+        {
+            try
+            {
+                await _jsModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // 页面断开时无需释放前端模块。
+            }
+        }
+
+        _dotNetRef?.Dispose();
+    }
+}

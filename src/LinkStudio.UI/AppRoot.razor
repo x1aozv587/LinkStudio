@@ -1,334 +1,76 @@
-@using System.Text
-@using LinkStudio.Core.Bus
-@using LinkStudio.Core.Devices.Virtual
-@implements IAsyncDisposable
+@implements IDisposable
 
-<div class="wb-shell-skeleton">
-    <section class="wb-skeleton-card wb-virtual-terminal" aria-labelledby="virtual-terminal-title">
-        <header class="wb-virtual-terminal-header">
-            <div>
-                <h1 id="virtual-terminal-title" class="wb-accent-cyan">虚拟设备终端</h1>
-                <p class="wb-muted" role="status">@_status</p>
-            </div>
-            <button type="button" class="wb-virtual-terminal-button"
-                    @onclick="ToggleAsync" disabled="@_isChanging">
-                @(_device is null ? "启动虚拟设备" : "停止虚拟设备")
+<div class="ls-app-shell" data-theme="@_settings.GetThemeKey()">
+    <!-- 最左侧极简导航：顶部是工作区入口，左下角是全局设置 -->
+    <aside class="ls-activity-rail" aria-label="主导航">
+        <div class="ls-rail-top">
+            <div class="ls-brand-mark" title="LinkStudio">LS</div>
+
+            <button type="button"
+                    class="ls-rail-btn @(_activePage == AppPage.Terminal ? "is-active" : string.Empty)"
+                    title="串口终端"
+                    aria-label="串口终端"
+                    @onclick="() => _activePage = AppPage.Terminal">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="4 17 10 11 4 5" />
+                    <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                <span class="ls-rail-label">终端</span>
             </button>
-        </header>
-
-        <div class="wb-virtual-terminal-output wb-mono">
-            @if (_messages.Count == 0)
-            {
-                <p class="wb-muted">启动后将在这里显示收发记录。</p>
-            }
-            else
-            {
-                <ol aria-label="最近收发记录，最新在前">
-                    @foreach (var message in _messages.Reverse())
-                    {
-                        <li>@message</li>
-                    }
-                </ol>
-            }
         </div>
-        <form class="wb-virtual-terminal-send" @onsubmit="SendTextAsync" @onsubmit:preventDefault>
-            <label for="virtual-terminal-text">发送内容</label>
-            <div class="wb-virtual-terminal-send-row">
-                <input id="virtual-terminal-text" class="wb-mono" type="text"
-                       @bind="_draft" @bind:event="oninput"
-                       disabled="@(_isChanging || _device?.IsOpen != true)" />
-                <button type="submit" class="wb-virtual-terminal-button" disabled="@(!CanSend)">
-                    @(_isSending ? "发送中…" : "发送")
-                </button>
-            </div>
 
-            @if (_sendError is not null)
-            {
-                <p class="wb-virtual-terminal-send-error" role="alert">@_sendError</p>
-            }
-        </form>
-
-        <div class="wb-virtual-terminal-send">
-            <label for="virtual-terminal-interval">
-                定时自动发送周期（ms）@(_isAutoSending ? $" · 运行中（{_activeAutoIntervalMs} ms）" : string.Empty)
-            </label>
-            <div class="wb-virtual-terminal-send-row">
-                <input id="virtual-terminal-interval" class="wb-mono wb-virtual-terminal-auto-input"
-                       type="number" min="10" step="100"
-                       @bind="_autoIntervalMs"
-                       disabled="@(_isChanging || _isTogglingAuto || _device?.IsOpen != true)" />
-                <button type="button" class="wb-virtual-terminal-button"
-                        @onclick="StartAutoSendAsync" disabled="@(!CanStartAutoSend)">
-                    Start
-                </button>
-                <button type="button" class="wb-virtual-terminal-button"
-                        @onclick="StopAutoSendAsync" disabled="@(!CanStopAutoSend)">
-                    Stop
-                </button>
-            </div>
-
-            @if (_autoError is not null)
-            {
-                <p class="wb-virtual-terminal-send-error" role="alert">@_autoError</p>
-            }
+        <div class="ls-rail-bottom">
+            <button type="button"
+                    class="ls-rail-btn @(_activePage == AppPage.Settings ? "is-active" : string.Empty)"
+                    title="全局设置"
+                    aria-label="全局设置"
+                    @onclick="() => _activePage = AppPage.Settings">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+                <span class="ls-rail-label">设置</span>
+            </button>
         </div>
-    </section>
+    </aside>
+
+    <!-- 主内容舞台：终端保持挂载，切到设置页时不断开串口、不丢历史日志 -->
+    <main class="ls-stage">
+        <div class="ls-pane @(_activePage == AppPage.Terminal ? string.Empty : "ls-pane-hidden")">
+            <TerminalView Settings="_settings" />
+        </div>
+
+        @if (_activePage == AppPage.Settings)
+        {
+            <div class="ls-pane">
+                <SettingsView Settings="_settings" />
+            </div>
+        }
+    </main>
 </div>
 
 @code {
-    private const int MessageLimit = 50;
-    private readonly Queue<string> _messages = new(MessageLimit);
-    private RawDataBus? _bus;
-    private VirtualMcuDevice? _device;
-    private Task? _transition;
-    private string _status = "未启动";
-    private bool _isChanging;
-    private bool _disposed;
-
-    private string _draft = string.Empty;
-    private string? _sendError;
-    private bool _isSending;
-
-    private int _autoIntervalMs = 1000;
-    private uint _activeAutoIntervalMs;
-    private bool _isAutoSending;
-    private bool _isTogglingAuto;
-    private string? _autoError;
-
-    private bool CanSend => !_disposed && !_isChanging && !_isSending
-        && _device?.IsOpen == true && !string.IsNullOrWhiteSpace(_draft);
-
-    private bool CanStartAutoSend => !_disposed && !_isChanging && !_isTogglingAuto
-        && _device?.IsOpen == true;
-
-    private bool CanStopAutoSend => !_disposed && !_isChanging && !_isTogglingAuto
-        && _device?.IsOpen == true && _isAutoSending;
-
-    private Task ToggleAsync()
+    private enum AppPage
     {
-        if (_disposed || _isChanging)
-        {
-            return Task.CompletedTask;
-        }
-
-        _transition = ChangeSessionAsync();
-        return _transition;
+        Terminal,
+        Settings
     }
 
-    private async Task ChangeSessionAsync()
-    {
-        _isChanging = true;
+    private readonly WorkbenchSettings _settings = new();
+    private AppPage _activePage = AppPage.Terminal;
 
-        try
-        {
-            if (_device is null)
-            {
-                _status = "正在启动…";
-                _sendError = null;
-                _autoError = null;
-                await StartAsync();
-                _status = "运行中";
-            }
-            else
-            {
-                _status = "正在停止…";
-                await StopAsync();
-                _status = "已停止";
-            }
-        }
-        catch (Exception error)
-        {
-            Serilog.Log.Error(error, "切换虚拟设备运行状态失败");
-            _status = "虚拟设备运行失败";
-        }
-        finally
-        {
-            _isChanging = false;
-        }
+    protected override void OnInitialized()
+    {
+        _settings.Changed += HandleSettingsChanged;
     }
 
-    private async Task StartAsync()
+    private void HandleSettingsChanged()
     {
-        var bus = new RawDataBus();
-        var device = new VirtualMcuDevice(bus);
-        _bus = bus;
-        _device = device;
-
-        try
-        {
-            // 打开设备就会收到第一包，所以先订阅。总线负责关闭它创建的订阅。
-            bus.Subscribe(new(device.Id, Capacity: MessageLimit, OverflowPolicy: RawDataOverflowPolicy.DropOldest),
-                (packet, _) => ShowPacketAsync(bus, packet));
-
-            await device.OpenAsync();
-        }
-        catch
-        {
-            await StopAsync();
-            throw;
-        }
+        _ = InvokeAsync(StateHasChanged);
     }
 
-    private async Task SendTextAsync()
+    public void Dispose()
     {
-        var device = _device;
-        if (device is null || !CanSend)
-        {
-            return;
-        }
-
-        var text = _draft;
-        _isSending = true;
-        _sendError = null;
-
-        try
-        {
-            // 界面把文字编码为字节，发送与回显记录由总线订阅回调显示。
-            await device.SendAsync(Encoding.UTF8.GetBytes(text));
-
-            if (!_disposed && ReferenceEquals(_device, device) && _draft == text)
-            {
-                _draft = string.Empty;
-            }
-        }
-        catch (OperationCanceledException) when (!ReferenceEquals(_device, device))
-        {
-            // 停止设备时，旧会话中尚未完成的发送请求会被取消。
-        }
-        catch (Exception error)
-        {
-            Serilog.Log.Error(error, "发送数据到虚拟设备失败");
-            if (!_disposed && ReferenceEquals(_device, device))
-            {
-                _sendError = "发送失败，请重试。";
-            }
-        }
-        finally
-        {
-            _isSending = false;
-        }
-    }
-
-    private Task StartAutoSendAsync()
-    {
-        if (_autoIntervalMs <= 0)
-        {
-            _autoError = "发送周期必须大于 0 毫秒。";
-            return Task.CompletedTask;
-        }
-
-        return SetAutoSendAsync(enabled: true, (uint)_autoIntervalMs);
-    }
-
-    private Task StopAutoSendAsync()
-    {
-        return SetAutoSendAsync(enabled: false, _activeAutoIntervalMs == 0 ? 1000u : _activeAutoIntervalMs);
-    }
-
-    private async Task SetAutoSendAsync(bool enabled, uint intervalMs)
-    {
-        var device = _device;
-        if (device is null || _disposed || _isChanging || _isTogglingAuto || !device.IsOpen)
-        {
-            return;
-        }
-
-        _isTogglingAuto = true;
-        _autoError = null;
-
-        try
-        {
-            // 通过设备的命令队列切换定时器状态，确保与打开/关闭操作严格串行。
-            await device.AutoSendAsync(enabled, intervalMs);
-
-            if (!_disposed && ReferenceEquals(_device, device))
-            {
-                _isAutoSending = enabled;
-                _activeAutoIntervalMs = enabled ? intervalMs : 0u;
-            }
-        }
-        catch (OperationCanceledException) when (!ReferenceEquals(_device, device))
-        {
-            // 停止设备时，旧会话尚未完成的自动发送请求会被取消，属于预期行为。
-        }
-        catch (Exception error)
-        {
-            Serilog.Log.Error(error, "切换虚拟设备自动发送状态失败");
-            if (!_disposed && ReferenceEquals(_device, device))
-            {
-                _autoError = enabled ? "启动自动发送失败，请重试。" : "停止自动发送失败，请重试。";
-            }
-        }
-        finally
-        {
-            _isTogglingAuto = false;
-        }
-    }
-
-    private ValueTask ShowPacketAsync(RawDataBus bus, RawDataPacket packet)
-    {
-        var text = Encoding.UTF8.GetString(packet.Payload.Span);
-
-        // 订阅回调由总线 Worker 执行。页面状态交给 Blazor 渲染上下文修改。
-        return new ValueTask(InvokeAsync(() =>
-        {
-            if (_disposed || !ReferenceEquals(_bus, bus))
-            {
-                return;
-            }
-
-            if (_messages.Count == MessageLimit)
-            {
-                _messages.Dequeue();
-            }
-
-            _messages.Enqueue($"[{packet.Direction} #{packet.SeqNo}] {text}");
-            StateHasChanged();
-        }));
-    }
-
-    private async Task StopAsync()
-    {
-        var device = _device;
-        var bus = _bus;
-
-        // 关闭前取消当前会话关联，忽略还没更新到页面的旧消息。
-        _device = null;
-        _bus = null;
-        _isAutoSending = false;
-        _activeAutoIntervalMs = 0u;
-        _autoError = null;
-
-        try
-        {
-            if (device is not null)
-            {
-                await device.DisposeAsync();
-            }
-        }
-        finally
-        {
-            if (bus is not null)
-            {
-                await bus.DisposeAsync();
-            }
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        _disposed = true;
-
-        try
-        {
-            if (_transition is not null)
-            {
-                await _transition;
-            }
-        }
-        finally
-        {
-            await StopAsync();
-        }
+        _settings.Changed -= HandleSettingsChanged;
     }
 }

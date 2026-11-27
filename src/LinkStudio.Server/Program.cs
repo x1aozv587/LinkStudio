@@ -1,8 +1,11 @@
+using LinkStudio.UI.Services;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // 注册 Blazor Server 交互渲染引擎，供 macOS / 浏览器模式托管共享的 LinkStudio.UI 组件库。
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+builder.Services.AddSingleton<IFolderPickerService, UnsupportedFolderPickerService>();
 
 var app = builder.Build();
 
@@ -13,3 +16,14 @@ app.MapRazorComponents<LinkStudio.Server.Components.App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+/// <summary>
+/// 浏览器端无原生本地文件夹弹窗，提供空实现保证共享 UI 正常注入。
+/// </summary>
+internal sealed class UnsupportedFolderPickerService : IFolderPickerService
+{
+    public bool IsSupported => false;
+
+    public Task<string?> PickFolderAsync(string title, string? initialDirectory = null) =>
+        Task.FromResult<string?>(null);
+}
