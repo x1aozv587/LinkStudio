@@ -8,15 +8,17 @@ namespace LinkStudio.Core.Models
     /// </summary>
     public class AppsSettings
     {
-        public const int CurrentVersion = 1;
+        public const int CurrentVersion = 2;
 
         /// <summary>
         /// 配置格式版本号。
         /// </summary>
-        /// <remarks>
-        /// 读取旧配置文件时据此判断是否需要迁移；格式发生不兼容变化时应递增。
-        /// </remarks>
         public int Version { get; set; } = CurrentVersion;
+
+        /// <summary>
+        /// LinkStudio 全局设置（外观主题与应用运行日志）。
+        /// </summary>
+        public StudioConfig Studio { get; set; } = new();
 
         /// <summary>
         /// 串口连接配置。
@@ -24,7 +26,7 @@ namespace LinkStudio.Core.Models
         public SerialPortConfig Connection { get; set; } = new();
 
         /// <summary>
-        /// 接收区设置。
+        /// 串口接收区与串口日志设置。
         /// </summary>
         public ReceiveConfig Receive { get; set; } = new();
 
@@ -39,13 +41,19 @@ namespace LinkStudio.Core.Models
         public List<SendPresetConfig> SendPreset { get; set; } = new();
 
         /// <summary>
-        /// 默认配置
+        /// 创建一份完整的默认配置。
         /// </summary>
         public static AppsSettings CreateDefault()
         {
             var settings = new AppsSettings
             {
                 Version = CurrentVersion,
+                Studio = new StudioConfig
+                {
+                    Theme = "Light",
+                    AutoSaveAppLogOnStartup = true,
+                    AppLogDirectory = Path.Combine(AppContext.BaseDirectory, "logs", "app")
+                },
                 Connection = new SerialPortConfig
                 {
                     PortName = string.Empty,
@@ -53,19 +61,28 @@ namespace LinkStudio.Core.Models
                     DataBits = 8,
                     StopBits = StopBits.One,
                     Parity = Parity.None,
-                    FlowControl = Handshake.None,
+                    FlowControl = Handshake.None
                 },
                 Receive = new ReceiveConfig
                 {
-                    FontSize = 13,
+                    FontSize = 16,
+                    DisplayMode = "Utf8",
+                    ShowTimestamp = true,
+                    ShowDirection = true,
+                    ShowPayload = true,
                     IsAutoScroll = true,
+                    MaxDisplayLines = 500,
+                    AutoSaveSerialLogOnOpen = false,
+                    SerialLogDirectory = Path.Combine(AppContext.BaseDirectory, "logs", "serial"),
+                    SerialLogFormat = ".log"
                 },
                 Send = new SendConfig
                 {
                     IsHex = false,
                     AppendCr = false,
                     AppendLf = false,
-                },
+                    EnterToSend = true
+                }
             };
 
             for (var i = 0; i < 5; i++)
@@ -75,7 +92,7 @@ namespace LinkStudio.Core.Models
                     Id = 0,
                     Interval = 0,
                     Text = string.Empty,
-                    IsHex = false,
+                    IsHex = false
                 });
             }
 
@@ -84,19 +101,30 @@ namespace LinkStudio.Core.Models
     }
 
     /// <summary>
-    /// 接收区显示设置。
+    /// LinkStudio 全局配置。
+    /// </summary>
+    public class StudioConfig
+    {
+        public string Theme { get; set; } = "Light";
+        public bool AutoSaveAppLogOnStartup { get; set; } = true;
+        public string AppLogDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "logs", "app");
+    }
+
+    /// <summary>
+    /// 串口接收区显示与串口数据日志设置。
     /// </summary>
     public class ReceiveConfig
     {
-        /// <summary>
-        /// 收到新数据时是否自动滚动到末尾。
-        /// </summary>
         public bool IsAutoScroll { get; set; } = true;
-
-        /// <summary>
-        /// 接收区字体大小。
-        /// </summary>
-        public int FontSize { get; set; } = 13;
+        public int FontSize { get; set; } = 16;
+        public string DisplayMode { get; set; } = "Utf8";
+        public bool ShowTimestamp { get; set; } = true;
+        public bool ShowDirection { get; set; } = true;
+        public bool ShowPayload { get; set; } = true;
+        public int MaxDisplayLines { get; set; } = 500;
+        public bool AutoSaveSerialLogOnOpen { get; set; }
+        public string SerialLogDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "logs", "serial");
+        public string SerialLogFormat { get; set; } = ".log";
     }
 
     /// <summary>
@@ -104,20 +132,10 @@ namespace LinkStudio.Core.Models
     /// </summary>
     public class SendConfig
     {
-        /// <summary>
-        /// 是否按 Hex 解释输入内容。
-        /// </summary>
-        public bool IsHex { get; set; } = false;
-
-        /// <summary>
-        /// 发送内容末尾是否追加 CR。
-        /// </summary>
-        public bool AppendCr { get; set; } = false;
-
-        /// <summary>
-        /// 发送内容末尾是否追加 LF。
-        /// </summary>
-        public bool AppendLf { get; set; } = false;
+        public bool IsHex { get; set; }
+        public bool AppendCr { get; set; }
+        public bool AppendLf { get; set; }
+        public bool EnterToSend { get; set; } = true;
     }
 
     /// <summary>
@@ -125,28 +143,9 @@ namespace LinkStudio.Core.Models
     /// </summary>
     public class SendPresetConfig
     {
-        /// <summary>
-        /// 循环发送序号，对应预设界面的 Seq；相同序号的预设可以组成一组。
-        /// </summary>
-        public int Id { get; set; } = 0;
-
-        /// <summary>
-        /// 预设的发送内容。
-        /// </summary>
-        /// <remarks>
-        /// <see cref="IsHex"/> 为 true 时该字符串按 Hex 文本解释。
-        /// </remarks>
+        public int Id { get; set; }
         public string Text { get; set; } = string.Empty;
-
-        /// <summary>
-        /// 循环发送的间隔时间。
-        /// 单位： ms
-        /// </summary>
-        public int Interval { get; set; } = 0;
-
-        /// <summary>
-        /// 该项是否按 Hex 方式解释 <see cref="Text"/>。
-        /// </summary>
-        public bool IsHex { get; set; } = false;
+        public int Interval { get; set; }
+        public bool IsHex { get; set; }
     }
 }

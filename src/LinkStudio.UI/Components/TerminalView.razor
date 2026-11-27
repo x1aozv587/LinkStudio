@@ -6,6 +6,7 @@
 @using LinkStudio.Core.Devices.Serial
 @using LinkStudio.Core.Devices.Virtual
 @using LinkStudio.Core.Helper
+@using LinkStudio.Core.Services
 @implements IAsyncDisposable
 
 <div class="ls-terminal-page">
@@ -248,6 +249,12 @@
                     <span class="ls-status-pill-dot"></span>
                     @_status
                 </span>
+                @if (_logRecorder is not null)
+                {
+                    <span class="ls-rec-pill" title="@($"正在自动保存日志：{_logRecorder.FilePath}")">
+                        ● REC
+                    </span>
+                }
                 <span>RX <strong class="ls-text-rx">@_rxBytes.ToString("N0")</strong> B</span>
                 <span>TX <strong class="ls-text-tx">@_txBytes.ToString("N0")</strong> B</span>
                 <span>@_entries.Count 条</span>
@@ -497,7 +504,7 @@
                         <label class="ls-switch">
                             <input type="checkbox"
                                    checked="@Settings.Serial.AutoSaveSerialLogOnOpen"
-                                   @onchange="e => UpdateBool(v => Settings.Serial.AutoSaveSerialLogOnOpen = v, e)" />
+                                   @onchange="OnAutoSaveSerialLogChangedAsync" />
                             <span class="ls-switch-track"></span>
                         </label>
                     </div>
@@ -566,6 +573,7 @@
 
     private RawDataBus? _bus;
     private ICommunicationDevice? _device;
+    private SerialLogRecorder? _logRecorder;
     private Task? _transition;
 
     private DeviceMode _mode = DeviceMode.Serial;
@@ -678,6 +686,16 @@
             if (_disposed)
             {
                 return;
+            }
+
+            if (_device is null)
+            {
+                _baudRateText = Settings.Serial.DefaultBaudRate.ToString(CultureInfo.InvariantCulture);
+                if (!string.IsNullOrWhiteSpace(Settings.Serial.LastPortName)
+                    && _availablePorts.Contains(Settings.Serial.LastPortName, StringComparer.OrdinalIgnoreCase))
+                {
+                    _selectedPort = Settings.Serial.LastPortName;
+                }
             }
 
             TrimEntriesToLimit();
@@ -874,6 +892,15 @@
             var serialDevice = new SerialPortDevice(bus, config);
             serialDevice.Faulted += HandleSerialFaulted;
             device = serialDevice;
+
+            // 记住本次连接使用的串口与波特率，方便下次打开自动预选。
+            if (!string.Equals(Settings.Serial.LastPortName, _selectedPort, StringComparison.OrdinalIgnoreCase)
+                || Settings.Serial.DefaultBaudRate != baudRate)
+            {
+                Settings.Serial.LastPortName = _selectedPort;
+                Settings.Serial.DefaultBaudRate = baudRate;
+                Settings.NotifyChanged();
+            }
         }
         else
         {
@@ -885,6 +912,17 @@
 
         try
         {
+            if (Settings.Serial.AutoSaveSerialLogOnOpen)
+            {
+                // 作为独立订阅者挂到 RawDataBus 上，按当前列设置异步写盘，不阻塞界面与串口收发。
+                _logRecorder = new SerialLogRecorder(
+                    bus,
+                    device.Id,
+                    Settings.Serial.SerialLogDirectory,
+                    device.Name,
+                    () => Settings.CreateSerialLogOptions());
+            }
+
             bus.Subscribe(
                 new(device.Id, Capacity: Math.Max(Settings.Serial.MaxDisplayLines, 256), OverflowPolicy: RawDataOverflowPolicy.DropOldest),
                 (packet, _) => OnPacketReceivedAsync(bus, packet));
@@ -922,9 +960,11 @@
     private async Task StopSessionAsync()
     {
         var device = _device;
+        var recorder = _logRecorder;
         var bus = _bus;
 
         _device = null;
+        _logRecorder = null;
         _bus = null;
         _isVirtualAutoSending = false;
 
@@ -942,9 +982,20 @@
         }
         finally
         {
-            if (bus is not null)
+            try
             {
-                await bus.DisposeAsync();
+                // 先释放总线以排空总线上尚未分发给订阅者的尾包，确保日志记录器全部写完。
+                if (bus is not null)
+                {
+                    await bus.DisposeAsync();
+                }
+            }
+            finally
+            {
+                if (recorder is not null)
+                {
+                    await recorder.DisposeAsync();
+                }
             }
         }
     }
@@ -1270,6 +1321,56 @@
         {
             Settings.Serial.SerialLogFormat = format;
             Settings.NotifyChanged();
+        }
+    }
+
+    private async Task OnAutoSaveSerialLogChangedAsync(ChangeEventArgs e)
+    {
+        if (e.Value is not bool enabled)
+        {
+            return;
+        }
+
+        Settings.Serial.AutoSaveSerialLogOnOpen = enabled;
+        Settings.NotifyChanged();
+
+        // 如果设备已经打开，切换开关时立即生效，无需断开重连。
+        var bus = _bus;
+        var device = _device;
+        if (bus is null || device is null || !device.IsOpen)
+        {
+            return;
+        }
+
+        if (enabled && _logRecorder is null)
+        {
+            try
+            {
+                _logRecorder = new SerialLogRecorder(
+                    bus,
+                    device.Id,
+                    Settings.Serial.SerialLogDirectory,
+                    device.Name,
+                    () => Settings.CreateSerialLogOptions());
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Error(error, "动态开启串口日志记录失败");
+                _connectionError = $"开启串口日志失败：{error.Message}";
+            }
+        }
+        else if (!enabled && _logRecorder is not null)
+        {
+            var recorder = _logRecorder;
+            _logRecorder = null;
+            try
+            {
+                await recorder.DisposeAsync();
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Warning(error, "停止串口日志记录失败");
+            }
         }
     }
 

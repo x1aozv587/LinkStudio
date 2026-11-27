@@ -1,4 +1,6 @@
-@implements IDisposable
+@using LinkStudio.Core.Services
+@using LinkStudio.Core.Services.Interfaces
+@implements IAsyncDisposable
 
 <div class="ls-app-shell" data-theme="@_settings.GetThemeKey()">
     <!-- 最左侧极简导航：顶部是工作区入口，左下角是全局设置 -->
@@ -56,21 +58,111 @@
         Settings
     }
 
+    [Inject]
+    private IAppsSettingsService SettingsService { get; set; } = default!;
+
     private readonly WorkbenchSettings _settings = new();
     private AppPage _activePage = AppPage.Terminal;
+    private CancellationTokenSource? _saveDebounceCts;
+    private bool _lastAppLogEnabled;
+    private string _lastAppLogDir = string.Empty;
+    private bool _settingsLoaded;
+    private bool _disposed;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         _settings.Changed += HandleSettingsChanged;
+
+        try
+        {
+            var loaded = await SettingsService.LoadSettingsAsync();
+            _settings.ApplyFrom(loaded);
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Warning(error, "加载本地配置失败，已使用默认配置");
+        }
+
+        _settingsLoaded = true;
+        ApplyAppLoggingIfChanged(force: true);
+        _settings.NotifyChanged();
     }
 
     private void HandleSettingsChanged()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_settingsLoaded)
+        {
+            ApplyAppLoggingIfChanged(force: false);
+            ScheduleSaveSettings();
+        }
+
         _ = InvokeAsync(StateHasChanged);
     }
 
-    public void Dispose()
+    private void ApplyAppLoggingIfChanged(bool force)
     {
+        var enabled = _settings.Studio.AutoSaveAppLogOnStartup;
+        var dir = _settings.Studio.AppLogDirectory;
+        if (!force && enabled == _lastAppLogEnabled && string.Equals(dir, _lastAppLogDir, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastAppLogEnabled = enabled;
+        _lastAppLogDir = dir;
+        AppLogging.Configure(enabled, dir);
+    }
+
+    private void ScheduleSaveSettings()
+    {
+        // 防抖保存：滑动字号滑块等高频变更时合并为最后一次写盘，避免频繁 I/O。
+        _saveDebounceCts?.Cancel();
+        _saveDebounceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _saveDebounceCts = cts;
+
+        _ = SaveAfterDelayAsync(cts.Token);
+    }
+
+    private async Task SaveAfterDelayAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(250, ct);
+            await SettingsService.SaveSettingsAsync(_settings.ToAppsSettings(), ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 被更新的保存请求取代属于预期行为。
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Error(error, "保存配置文件失败");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
         _settings.Changed -= HandleSettingsChanged;
+        _saveDebounceCts?.Cancel();
+        _saveDebounceCts?.Dispose();
+
+        if (_settingsLoaded)
+        {
+            try
+            {
+                await SettingsService.SaveSettingsAsync(_settings.ToAppsSettings());
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Warning(error, "退出时保存配置失败");
+            }
+        }
     }
 }

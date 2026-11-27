@@ -1,5 +1,6 @@
 using System.IO.Ports;
 using LinkStudio.Core.Models;
+using LinkStudio.Core.Services;
 
 namespace LinkStudio.UI.State
 {
@@ -41,7 +42,8 @@ namespace LinkStudio.UI.State
     /// </summary>
     public sealed class SerialWorkspaceSettings
     {
-        // 串口高级参数
+        // 串口连接与高级参数
+        public string LastPortName { get; set; } = string.Empty;
         public int DefaultBaudRate { get; set; } = 1_000_000;
         public int DataBits { get; set; } = 8;
         public StopBits StopBits { get; set; } = StopBits.One;
@@ -71,7 +73,7 @@ namespace LinkStudio.UI.State
     }
 
     /// <summary>
-    /// 运行时共享设置容器：Studio 全局设置与串口工作区设置严格分离。
+    /// 运行时共享设置容器：Studio 全局设置与串口工作区设置严格分离，并与 Core 的 AppsSettings 双向同步。
     /// </summary>
     public sealed class WorkbenchSettings
     {
@@ -79,6 +81,8 @@ namespace LinkStudio.UI.State
         public const int SliderMaxFontSize = 30;
         public const int InputMinFontSize = 7;
         public const int InputMaxFontSize = 40;
+
+        private List<SendPresetConfig> _sendPresets = AppsSettings.CreateDefault().SendPreset;
 
         public StudioSettings Studio { get; } = new();
         public SerialWorkspaceSettings Serial { get; } = new();
@@ -113,6 +117,110 @@ namespace LinkStudio.UI.State
                 StopBits = Serial.StopBits,
                 Parity = Serial.Parity,
                 FlowControl = Serial.FlowControl
+            };
+        }
+
+        public SerialLogOptions CreateSerialLogOptions(IReadOnlyList<ISerialLogColumn>? extraColumns = null)
+        {
+            return new SerialLogOptions(
+                IsBinary: string.Equals(Serial.SerialLogFormat, ".bin", StringComparison.OrdinalIgnoreCase),
+                ShowTimestamp: Serial.ShowTimestamp,
+                ShowDirection: Serial.ShowDirection,
+                ShowPayload: Serial.ShowPayload,
+                FormatPayloadAsHex: Serial.DisplayMode == TerminalDisplayMode.Hex,
+                ExtraColumns: extraColumns);
+        }
+
+        public void ApplyFrom(AppsSettings source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+
+            if (Enum.TryParse<AppTheme>(source.Studio.Theme, ignoreCase: true, out var theme))
+            {
+                Studio.Theme = theme;
+            }
+
+            Studio.AutoSaveAppLogOnStartup = source.Studio.AutoSaveAppLogOnStartup;
+            if (!string.IsNullOrWhiteSpace(source.Studio.AppLogDirectory))
+            {
+                Studio.AppLogDirectory = source.Studio.AppLogDirectory;
+            }
+
+            Serial.LastPortName = source.Connection.PortName ?? string.Empty;
+            Serial.DefaultBaudRate = source.Connection.BaudRate > 0 ? source.Connection.BaudRate : 1_000_000;
+            Serial.DataBits = source.Connection.DataBits;
+            Serial.StopBits = source.Connection.StopBits;
+            Serial.Parity = source.Connection.Parity;
+            Serial.FlowControl = source.Connection.FlowControl;
+
+            Serial.FontSizePx = Math.Clamp(source.Receive.FontSize, InputMinFontSize, InputMaxFontSize);
+            if (Enum.TryParse<TerminalDisplayMode>(source.Receive.DisplayMode, ignoreCase: true, out var displayMode))
+            {
+                Serial.DisplayMode = displayMode;
+            }
+
+            Serial.ShowTimestamp = source.Receive.ShowTimestamp;
+            Serial.ShowDirection = source.Receive.ShowDirection;
+            Serial.ShowPayload = source.Receive.ShowPayload;
+            Serial.AutoScroll = source.Receive.IsAutoScroll;
+            Serial.MaxDisplayLines = source.Receive.MaxDisplayLines >= 50 ? source.Receive.MaxDisplayLines : 500;
+            Serial.AutoSaveSerialLogOnOpen = source.Receive.AutoSaveSerialLogOnOpen;
+            if (!string.IsNullOrWhiteSpace(source.Receive.SerialLogDirectory))
+            {
+                Serial.SerialLogDirectory = source.Receive.SerialLogDirectory;
+            }
+
+            Serial.SerialLogFormat = source.Receive.SerialLogFormat is ".bin" ? ".bin" : ".log";
+
+            Serial.SendAsHex = source.Send.IsHex;
+            Serial.AppendCr = source.Send.AppendCr;
+            Serial.AppendLf = source.Send.AppendLf;
+            Serial.EnterToSend = source.Send.EnterToSend;
+
+            _sendPresets = source.SendPreset ?? [];
+        }
+
+        public AppsSettings ToAppsSettings()
+        {
+            return new AppsSettings
+            {
+                Version = AppsSettings.CurrentVersion,
+                Studio = new StudioConfig
+                {
+                    Theme = Studio.Theme.ToString(),
+                    AutoSaveAppLogOnStartup = Studio.AutoSaveAppLogOnStartup,
+                    AppLogDirectory = Studio.AppLogDirectory
+                },
+                Connection = new SerialPortConfig
+                {
+                    PortName = Serial.LastPortName,
+                    BaudRate = Serial.DefaultBaudRate,
+                    DataBits = Serial.DataBits,
+                    StopBits = Serial.StopBits,
+                    Parity = Serial.Parity,
+                    FlowControl = Serial.FlowControl
+                },
+                Receive = new ReceiveConfig
+                {
+                    FontSize = Serial.FontSizePx,
+                    DisplayMode = Serial.DisplayMode.ToString(),
+                    ShowTimestamp = Serial.ShowTimestamp,
+                    ShowDirection = Serial.ShowDirection,
+                    ShowPayload = Serial.ShowPayload,
+                    IsAutoScroll = Serial.AutoScroll,
+                    MaxDisplayLines = Serial.MaxDisplayLines,
+                    AutoSaveSerialLogOnOpen = Serial.AutoSaveSerialLogOnOpen,
+                    SerialLogDirectory = Serial.SerialLogDirectory,
+                    SerialLogFormat = Serial.SerialLogFormat
+                },
+                Send = new SendConfig
+                {
+                    IsHex = Serial.SendAsHex,
+                    AppendCr = Serial.AppendCr,
+                    AppendLf = Serial.AppendLf,
+                    EnterToSend = Serial.EnterToSend
+                },
+                SendPreset = _sendPresets
             };
         }
 
