@@ -37,7 +37,7 @@ namespace LinkStudio.Core.Tests
         }
 
         [Fact]
-        public async Task OpenAsync_PublishesReadyThenTick()
+        public async Task AutoSendAsync_PublishesReadyThenTick()
         {
             await using var bus = new RawDataBus();
             await using var device = new VirtualMcuDevice(bus);
@@ -48,6 +48,7 @@ namespace LinkStudio.Core.Tests
                 (packet, ct) => packets.Writer.WriteAsync(packet, ct));
 
             await device.OpenAsync();
+            await device.AutoSendAsync(enabled: true, interval: 50);
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var first = await packets.Reader.ReadAsync(timeout.Token);
@@ -104,6 +105,62 @@ namespace LinkStudio.Core.Tests
 
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => device.SendAsync(new byte[] { 0x01 }));
+        }
+
+        [Fact]
+        public async Task AutoSendAsync_ValidatesZeroIntervalAndAllowsDisableWithZero()
+        {
+            await using var bus = new RawDataBus();
+            await using var device = new VirtualMcuDevice(bus);
+
+            await device.OpenAsync();
+
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                () => device.AutoSendAsync(enabled: true, interval: 0));
+
+            await device.AutoSendAsync(enabled: true, interval: 50);
+            // 关闭定时器时允许传入 0，不应误报周期无效。
+            await device.AutoSendAsync(enabled: false, interval: 0);
+        }
+
+        [Fact]
+        public async Task DisposeAsync_ConcurrentWithSendAsync_DoesNotLeakChannelClosedException()
+        {
+            await using var bus = new RawDataBus();
+            var device = new VirtualMcuDevice(bus);
+            await device.OpenAsync();
+
+            var payload = new byte[] { 0x41 };
+            var sendTasks = Enumerable.Range(0, 32)
+                .Select(_ => Task.Run(() => device.SendAsync(payload)))
+                .ToArray();
+
+            var disposeTask = device.DisposeAsync().AsTask();
+            await disposeTask;
+
+            foreach (var sendTask in sendTasks)
+            {
+                try
+                {
+                    await sendTask;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 并发释放时允许抛出标准的 ObjectDisposedException。
+                }
+                catch (InvalidOperationException)
+                {
+                    // 并发释放前如果刚好排在内部 Close 之后，可能抛出未打开异常。
+                }
+                catch (OperationCanceledException)
+                {
+                    // Worker 退出排空队列时可能取消未执行的命令。
+                }
+            }
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => device.OpenAsync());
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => device.SendAsync(payload));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => device.AutoSendAsync(true, 100));
         }
     }
 }
