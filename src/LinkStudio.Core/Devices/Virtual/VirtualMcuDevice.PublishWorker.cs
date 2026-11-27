@@ -24,7 +24,8 @@ namespace LinkStudio.Core.Devices.Virtual
             PacketDirection direction,
             ReadOnlyMemory<byte> payload,
             TaskCompletionSource? completion,
-            CancellationToken ct)
+            CancellationToken enqueueCt,
+            CancellationToken? publishCt = null)
         {
             var packet = new RawDataPacket(
                 ChannelId: Id,
@@ -35,7 +36,9 @@ namespace LinkStudio.Core.Devices.Virtual
                 Payload: payload);
 
             // 这里只进入设备自己的发布缓存；真正等待 RawDataBus 的是发布 Worker。
-            await _publishBuffer.Writer.WriteAsync(new PublishItem(packet, completion, ct), ct);
+            await _publishBuffer.Writer.WriteAsync(
+                new PublishItem(packet, completion, publishCt ?? enqueueCt),
+                enqueueCt);
         }
 
         private async Task PublishWorkerAsync()

@@ -1,6 +1,5 @@
 ﻿using LinkStudio.Core.Bus;
 using System.Threading.Channels;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace LinkStudio.Core.Devices.Virtual
 {
@@ -43,19 +42,23 @@ namespace LinkStudio.Core.Devices.Virtual
 
             // 命令可能由多个调用方和定时器同时写入，所以 SingleWriter 为 false；
             // 只有 CommandWorkerAsync 读取，所以 SingleReader 为 true。
+            // 禁止同步延续，防止调用方 await 之后的逻辑抢占命令 Worker 线程。
             _commands = Channel.CreateBounded<VirtualMcuCommand>(new BoundedChannelOptions(CommandCapacity)
             {
                 SingleReader = true,
                 SingleWriter = false,
-                FullMode = BoundedChannelFullMode.Wait
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false
             });
 
             // 发布缓存只有命令 Worker 写、发布 Worker 读，因此两项都可以设为 true。
+            // 禁止同步延续，保证两个 Worker 各自独立调度，互不阻塞调用栈。
             _publishBuffer = Channel.CreateBounded<PublishItem>(new BoundedChannelOptions(PublishBufferCapacity)
             {
                 SingleReader = true,
                 SingleWriter = true,
-                FullMode = BoundedChannelFullMode.Wait
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false
             });
 
             // 构造设备时启动两个后台 Worker。没有数据时它们会异步等待，不会空转占用 CPU。
@@ -101,14 +104,17 @@ namespace LinkStudio.Core.Devices.Virtual
             return EnqueueAndWaitAsync(command, completion, ct);
         }
 
-        // 测试时使用这个接口开启虚拟串口的发送
-        public Task AutoSendAsync(bool enabled, UInt32 interval, CancellationToken ct = default )
+        // 开关虚拟设备的定时自动发送，并指定发送周期（毫秒）。
+        public Task AutoSendAsync(bool enabled, UInt32 interval, CancellationToken ct = default)
         {
             ThrowIfDisposing();
             ct.ThrowIfCancellationRequested();
-            var completion = CreateCompletion();
+            if (enabled)
+            {
+                ArgumentOutOfRangeException.ThrowIfZero(interval);
+            }
 
-            // 调用方可能复用原内存，所以入队前先复制一份。
+            var completion = CreateCompletion();
             var command = new AutoVirtualMcuCommand(enabled, interval, ct, completion);
             return EnqueueAndWaitAsync(command, completion, ct);
         }
@@ -118,8 +124,16 @@ namespace LinkStudio.Core.Devices.Virtual
             TaskCompletionSource completion,
             CancellationToken ct)
         {
-            // 第一次 await 只保证命令已经进入队列，不代表命令执行完成。
-            await _commands.Writer.WriteAsync(command, ct);
+            try
+            {
+                // 第一次 await 只保证命令已经进入队列，不代表命令执行完成。
+                await _commands.Writer.WriteAsync(command, ct);
+            }
+            catch (ChannelClosedException) when (Volatile.Read(ref _disposeStarted) == 1)
+            {
+                // 与 DisposeAsync 并发时命令队列可能刚被关闭，统一转为标准 ObjectDisposedException。
+                throw new ObjectDisposedException(nameof(VirtualMcuDevice));
+            }
 
             // 第二次 await 等待 Worker 填写回执：成功、失败和取消都会传回调用方。
             await completion.Task.WaitAsync(ct);

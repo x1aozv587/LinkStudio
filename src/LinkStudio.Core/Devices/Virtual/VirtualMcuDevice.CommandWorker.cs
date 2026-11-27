@@ -73,21 +73,28 @@ namespace LinkStudio.Core.Devices.Virtual
         private async Task HandleAutoSend(AutoVirtualMcuCommand autoSend)
         {
             autoSend.CancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _disposeStarted) == 1)
+            {
+                autoSend.Completion.TrySetException(new ObjectDisposedException(nameof(VirtualMcuDevice)));
+                return;
+            }
+
             if (IsOpen == false)
             {
                 autoSend.Completion.TrySetException(new InvalidOperationException("请先打开虚拟设备。"));
                 return;
             }
 
-            if (autoSend.intervalMS <= 0)
-            {
-                autoSend.Completion.TrySetException(new InvalidOperationException("定时器 interval = 0 无效"));
-                return;
-            }
-
             if (autoSend.enabled)
             {
-                // 先关再开
+                if (autoSend.intervalMS == 0)
+                {
+                    autoSend.Completion.TrySetException(
+                        new ArgumentOutOfRangeException(nameof(autoSend.intervalMS), "定时器周期必须大于 0 ms。"));
+                    return;
+                }
+
+                // 先关再开，避免旧定时器泄漏，同时支持运行中直接修改周期。
                 await StopTimerAsync();
 
                 StartTimer(autoSend.intervalMS);
@@ -103,20 +110,28 @@ namespace LinkStudio.Core.Devices.Virtual
         private async Task HandleOpenAsync(OpenVirtualMcuCommand command)
         {
             command.CancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _disposeStarted) == 1)
+            {
+                command.Completion.TrySetException(new ObjectDisposedException(nameof(VirtualMcuDevice)));
+                return;
+            }
+
             if (IsOpen)
             {
                 command.Completion.TrySetResult();
                 return;
             }
 
-            Volatile.Write(ref _isOpen, 1);
-
-            // ready 包进入 Bus 后，发布 Worker 才会填写 Open 命令的回执。
+            // 先把 ready 包写入发布缓存（且发布阶段不接受外部取消），确认入队后再置 IsOpen = 1，
+            // 避免入队中途取消导致“OpenAsync 失败但 IsOpen 却为 true”的状态撕裂。
             await QueuePacketAsync(
                 PacketDirection.Rx,
                 Encoding.UTF8.GetBytes("Virtual MCU ready"),
                 command.Completion,
-                command.CancellationToken);
+                command.CancellationToken,
+                publishCt: CancellationToken.None);
+
+            Volatile.Write(ref _isOpen, 1);
         }
 
         private async Task HandleCloseAsync(CloseVirtualMcuCommand command)
@@ -132,6 +147,12 @@ namespace LinkStudio.Core.Devices.Virtual
         private async Task HandleSendAsync(SendVirtualMcuCommand command)
         {
             command.CancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _disposeStarted) == 1)
+            {
+                command.Completion.TrySetException(new ObjectDisposedException(nameof(VirtualMcuDevice)));
+                return;
+            }
+
             if (!IsOpen)
             {
                 command.Completion.TrySetException(
@@ -168,7 +189,7 @@ namespace LinkStudio.Core.Devices.Virtual
 
         private async Task TimerLoopAsync(UInt32 intervalMS, CancellationToken ct)
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds((double)intervalMS / 1000.0));
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(intervalMS));
             try
             {
                 while (await timer.WaitForNextTickAsync(ct))
@@ -208,7 +229,7 @@ namespace LinkStudio.Core.Devices.Virtual
 
         private static CancellationToken GetToken(VirtualMcuCommand command)
         {
-            // 目前只有 Open 和 Send 允许调用方取消；Close 和 Tick 返回永不取消的 None。
+            // Open、Send 和 AutoSend 允许调用方取消；Close 和 Tick 返回永不取消的 None。
             return command switch
             {
                 OpenVirtualMcuCommand open => open.CancellationToken,
