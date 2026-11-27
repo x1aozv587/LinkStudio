@@ -1,4 +1,4 @@
-using LinkStudio.Core.Bus;
+﻿using LinkStudio.Core.Bus;
 using System.Text;
 
 namespace LinkStudio.Core.Devices.Virtual
@@ -33,8 +33,14 @@ namespace LinkStudio.Core.Devices.Virtual
                             case SendVirtualMcuCommand send:
                                 await HandleSendAsync(send);
                                 break;
+
                             case TickVirtualMcuCommand:
+                            {
                                 await HandleTickAsync();
+                            } break;
+
+                            case AutoVirtualMcuCommand autoSend:
+                                await HandleAutoSend(autoSend);
                                 break;
                         }
                     }
@@ -64,6 +70,36 @@ namespace LinkStudio.Core.Devices.Virtual
             }
         }
 
+        private async Task HandleAutoSend(AutoVirtualMcuCommand autoSend)
+        {
+            autoSend.CancellationToken.ThrowIfCancellationRequested();
+            if (IsOpen == false)
+            {
+                autoSend.Completion.TrySetException(new InvalidOperationException("请先打开虚拟设备。"));
+                return;
+            }
+
+            if (autoSend.intervalMS <= 0)
+            {
+                autoSend.Completion.TrySetException(new InvalidOperationException("定时器 interval = 0 无效"));
+                return;
+            }
+
+            if (autoSend.enabled)
+            {
+                // 先关再开
+                await StopTimerAsync();
+
+                StartTimer(autoSend.intervalMS);
+            }
+            else
+            {
+                await StopTimerAsync();
+            }
+
+            autoSend.Completion.TrySetResult();
+        }
+
         private async Task HandleOpenAsync(OpenVirtualMcuCommand command)
         {
             command.CancellationToken.ThrowIfCancellationRequested();
@@ -74,7 +110,6 @@ namespace LinkStudio.Core.Devices.Virtual
             }
 
             Volatile.Write(ref _isOpen, 1);
-            StartTimer();
 
             // ready 包进入 Bus 后，发布 Worker 才会填写 Open 命令的回执。
             await QueuePacketAsync(
@@ -124,16 +159,16 @@ namespace LinkStudio.Core.Devices.Virtual
             }
         }
 
-        private void StartTimer()
+        private void StartTimer(UInt32 intervalMS )
         {
             // CancellationTokenSource 相当于定时器的“停止开关”，Close 时会调用 Cancel。
             _timerCancellation = new CancellationTokenSource();
-            _timerTask = TimerLoopAsync(_timerCancellation.Token);
+            _timerTask = TimerLoopAsync(intervalMS , _timerCancellation.Token);
         }
 
-        private async Task TimerLoopAsync(CancellationToken ct)
+        private async Task TimerLoopAsync(UInt32 intervalMS, CancellationToken ct)
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds((double)intervalMS / 1000.0));
             try
             {
                 while (await timer.WaitForNextTickAsync(ct))
@@ -178,6 +213,7 @@ namespace LinkStudio.Core.Devices.Virtual
             {
                 OpenVirtualMcuCommand open => open.CancellationToken,
                 SendVirtualMcuCommand send => send.CancellationToken,
+                AutoVirtualMcuCommand auto => auto.CancellationToken,
                 _ => CancellationToken.None
             };
         }
@@ -195,6 +231,10 @@ namespace LinkStudio.Core.Devices.Virtual
                 case SendVirtualMcuCommand send:
                     send.Completion.TrySetException(error);
                     break;
+
+                case AutoVirtualMcuCommand autoVirtualMcuCommand:
+                    autoVirtualMcuCommand.Completion.TrySetException(error);
+                    break;
             }
         }
 
@@ -210,6 +250,10 @@ namespace LinkStudio.Core.Devices.Virtual
                     break;
                 case SendVirtualMcuCommand send:
                     send.Completion.TrySetCanceled(ct);
+                    break;
+
+                case AutoVirtualMcuCommand autoVirtualMcuCommand:
+                    autoVirtualMcuCommand.Completion.TrySetCanceled(ct);
                     break;
             }
         }

@@ -47,6 +47,31 @@
                 <p class="wb-virtual-terminal-send-error" role="alert">@_sendError</p>
             }
         </form>
+
+        <div class="wb-virtual-terminal-send">
+            <label for="virtual-terminal-interval">
+                定时自动发送周期（ms）@(_isAutoSending ? $" · 运行中（{_activeAutoIntervalMs} ms）" : string.Empty)
+            </label>
+            <div class="wb-virtual-terminal-send-row">
+                <input id="virtual-terminal-interval" class="wb-mono wb-virtual-terminal-auto-input"
+                       type="number" min="10" step="100"
+                       @bind="_autoIntervalMs"
+                       disabled="@(_isChanging || _isTogglingAuto || _device?.IsOpen != true)" />
+                <button type="button" class="wb-virtual-terminal-button"
+                        @onclick="StartAutoSendAsync" disabled="@(!CanStartAutoSend)">
+                    Start
+                </button>
+                <button type="button" class="wb-virtual-terminal-button"
+                        @onclick="StopAutoSendAsync" disabled="@(!CanStopAutoSend)">
+                    Stop
+                </button>
+            </div>
+
+            @if (_autoError is not null)
+            {
+                <p class="wb-virtual-terminal-send-error" role="alert">@_autoError</p>
+            }
+        </div>
     </section>
 </div>
 
@@ -64,8 +89,20 @@
     private string? _sendError;
     private bool _isSending;
 
+    private int _autoIntervalMs = 1000;
+    private uint _activeAutoIntervalMs;
+    private bool _isAutoSending;
+    private bool _isTogglingAuto;
+    private string? _autoError;
+
     private bool CanSend => !_disposed && !_isChanging && !_isSending
         && _device?.IsOpen == true && !string.IsNullOrWhiteSpace(_draft);
+
+    private bool CanStartAutoSend => !_disposed && !_isChanging && !_isTogglingAuto
+        && _device?.IsOpen == true;
+
+    private bool CanStopAutoSend => !_disposed && !_isChanging && !_isTogglingAuto
+        && _device?.IsOpen == true && _isAutoSending;
 
     private Task ToggleAsync()
     {
@@ -88,6 +125,7 @@
             {
                 _status = "正在启动…";
                 _sendError = null;
+                _autoError = null;
                 await StartAsync();
                 _status = "运行中";
             }
@@ -171,6 +209,62 @@
         }
     }
 
+    private Task StartAutoSendAsync()
+    {
+        if (_autoIntervalMs <= 0)
+        {
+            _autoError = "发送周期必须大于 0 毫秒。";
+            return Task.CompletedTask;
+        }
+
+        return SetAutoSendAsync(enabled: true, (uint)_autoIntervalMs);
+    }
+
+    private Task StopAutoSendAsync()
+    {
+        return SetAutoSendAsync(enabled: false, _activeAutoIntervalMs == 0 ? 1000u : _activeAutoIntervalMs);
+    }
+
+    private async Task SetAutoSendAsync(bool enabled, uint intervalMs)
+    {
+        var device = _device;
+        if (device is null || _disposed || _isChanging || _isTogglingAuto || !device.IsOpen)
+        {
+            return;
+        }
+
+        _isTogglingAuto = true;
+        _autoError = null;
+
+        try
+        {
+            // 通过设备的命令队列切换定时器状态，确保与打开/关闭操作严格串行。
+            await device.AutoSendAsync(enabled, intervalMs);
+
+            if (!_disposed && ReferenceEquals(_device, device))
+            {
+                _isAutoSending = enabled;
+                _activeAutoIntervalMs = enabled ? intervalMs : 0u;
+            }
+        }
+        catch (OperationCanceledException) when (!ReferenceEquals(_device, device))
+        {
+            // 停止设备时，旧会话尚未完成的自动发送请求会被取消，属于预期行为。
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Error(error, "切换虚拟设备自动发送状态失败");
+            if (!_disposed && ReferenceEquals(_device, device))
+            {
+                _autoError = enabled ? "启动自动发送失败，请重试。" : "停止自动发送失败，请重试。";
+            }
+        }
+        finally
+        {
+            _isTogglingAuto = false;
+        }
+    }
+
     private ValueTask ShowPacketAsync(RawDataBus bus, RawDataPacket packet)
     {
         var text = Encoding.UTF8.GetString(packet.Payload.Span);
@@ -201,6 +295,9 @@
         // 关闭前取消当前会话关联，忽略还没更新到页面的旧消息。
         _device = null;
         _bus = null;
+        _isAutoSending = false;
+        _activeAutoIntervalMs = 0u;
+        _autoError = null;
 
         try
         {

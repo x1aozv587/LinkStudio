@@ -165,3 +165,7 @@ html, body {
     margin: 8px 0 0;
     color: #FDA4AF;
 }
+
+.wb-virtual-terminal-auto-input {
+    max-width: 140px;
+}
