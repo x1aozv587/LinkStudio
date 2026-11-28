@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Wpf" Version="8.0.100" />
+    <!-- 显式引用以便 win-x64 独立发布时打包 runtimes/win 下的真实 Windows 串口实现，避免被 net8.0 占位程序集覆盖。 -->
+    <PackageReference Include="System.IO.Ports" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,5 +25,13 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <!-- 防止引用的 net8.0 类库在 win-x64 独立发布时用 35KB 跨平台占位 DLL 覆盖 runtimes/win 下的真实 Windows 串口实现 -->
+  <Target Name="FixWindowsSerialPortPublishAsset" AfterTargets="ComputeFilesToPublish" Condition="'$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'System.IO.Ports.dll' AND !$([System.String]::Copy('%(ResolvedFileToPublish.Identity)').Contains('runtimes\win'))" />
+    </ItemGroup>
+  </Target>
 
 </Project>
