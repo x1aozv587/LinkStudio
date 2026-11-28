@@ -159,7 +159,8 @@
                         var index = i;
                         var entry = _matchedEntries[i];
                         var isFocused = index == _activeMatchIndex;
-                        <div class="ls-log-row @GetRowCssClass(entry) @(ReferenceEquals(_copiedEntry, entry) ? "is-copied" : string.Empty) @(isFocused ? "is-jump-target" : string.Empty)"
+                        <div @key="entry.EntryId"
+                             class="ls-log-row @GetRowCssClass(entry) @(ReferenceEquals(_copiedEntry, entry) ? "is-copied" : string.Empty) @(isFocused ? "is-jump-target" : string.Empty)"
                              data-entry-id="@entry.EntryId"
                              title="单击在主窗口定位上下文 · 双击复制整条"
                              @onclick="() => FocusMatchAsync(index)"
@@ -184,6 +185,13 @@
             @if (_copyToastText is not null)
             {
                 <div class="ls-copy-toast" role="status">@_copyToastText</div>
+            }
+
+            @if (_userScrolledUp && _matchedEntries.Count > 0)
+            {
+                <button type="button" class="ls-scroll-bottom-fab" @onclick="JumpToBottomAsync">
+                    ↓ 回到底部
+                </button>
             }
         </section>
     </div>
@@ -212,10 +220,13 @@
     private int _copyToastVersion;
     private bool _userScrolledUp;
     private bool _pendingScrollToBottom;
+    private Timer? _entriesThrottleTimer;
+    private int _entriesRefreshScheduled;
     private bool _disposed;
 
     protected override void OnInitialized()
     {
+        _entriesThrottleTimer = new Timer(OnEntriesThrottleElapsed, null, Timeout.Infinite, Timeout.Infinite);
         // 初次打开窗口且没有规则时，默认自动添一条空白规则，打开就能直接打字。
         if (SessionHub.GetRulesSnapshot().Count == 0)
         {
@@ -263,14 +274,58 @@
     [JSInvokable]
     public void OnTerminalScrollPositionChanged(bool isNearBottom)
     {
-        if (!_disposed)
+        if (_disposed)
         {
-            _userScrolledUp = !isNearBottom;
+            return;
+        }
+
+        var scrolledUp = !isNearBottom;
+        if (_userScrolledUp != scrolledUp)
+        {
+            _userScrolledUp = scrolledUp;
+            StateHasChanged();
+        }
+    }
+
+    private async Task JumpToBottomAsync()
+    {
+        _userScrolledUp = false;
+        _pendingScrollToBottom = true;
+        if (_jsModule is not null)
+        {
+            try
+            {
+                await _jsModule.InvokeVoidAsync("scrollToBottom", _viewportRef, true);
+            }
+            catch (JSDisconnectedException)
+            {
+                // 窗口关闭时忽略脚本调用异常。
+            }
         }
     }
 
     private void HandleEntriesChanged()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // 80 ms 节流合并：高速串口下避免过滤窗口高频全量扫描与重绘。
+        if (Interlocked.CompareExchange(ref _entriesRefreshScheduled, 1, 0) == 0)
+        {
+            _entriesThrottleTimer?.Change(80, Timeout.Infinite);
+        }
+    }
+
+    private void OnEntriesThrottleElapsed(object? state)
+    {
+        Interlocked.Exchange(ref _entriesRefreshScheduled, 0);
+        if (_disposed)
+        {
+            return;
+        }
+
         _ = InvokeAsync(() =>
         {
             if (_disposed)
@@ -278,9 +333,10 @@
                 return;
             }
 
-            var prevCount = _matchedEntries.Count;
+            var prevLastId = _matchedEntries.Count > 0 ? _matchedEntries[^1].EntryId : 0L;
             RefreshViewData();
-            if (_matchedEntries.Count > prevCount && Settings.Serial.AutoScroll && !_userScrolledUp)
+            var nextLastId = _matchedEntries.Count > 0 ? _matchedEntries[^1].EntryId : 0L;
+            if (nextLastId > prevLastId && Settings.Serial.AutoScroll && !_userScrolledUp)
             {
                 _pendingScrollToBottom = true;
             }
@@ -554,6 +610,7 @@
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _entriesThrottleTimer?.Dispose();
         Settings.Changed -= HandleExternalChange;
         SessionHub.EntriesChanged -= HandleEntriesChanged;
         SessionHub.RulesChanged -= HandleExternalChange;

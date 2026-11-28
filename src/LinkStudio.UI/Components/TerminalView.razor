@@ -241,7 +241,8 @@
             {
                 @foreach (var entry in _entries)
                 {
-                    <div class="ls-log-row @GetRowCssClass(entry) @(ReferenceEquals(_copiedEntry, entry) ? "is-copied" : string.Empty) @(_jumpTargetEntryId == entry.EntryId ? "is-jump-target" : string.Empty)"
+                    <div @key="entry.EntryId"
+                         class="ls-log-row @GetRowCssClass(entry) @(ReferenceEquals(_copiedEntry, entry) ? "is-copied" : string.Empty) @(_jumpTargetEntryId == entry.EntryId ? "is-jump-target" : string.Empty)"
                          data-entry-id="@entry.EntryId"
                          title="双击复制整条内容"
                          @ondblclick="() => CopyEntryAsync(entry)">
@@ -579,6 +580,7 @@
                                     Value="Settings.Serial.SerialLogFormat"
                                     ValueChanged="v => UpdateSetting(() => Settings.Serial.SerialLogFormat = v)"
                                     CssClass="ls-drawer-control"
+                                    OpenUpward="true"
                                     AriaLabel="日志格式" />
                     </div>
                 </div>
@@ -596,6 +598,9 @@
 
     [Parameter, EditorRequired]
     public WorkbenchSettings Settings { get; set; } = default!;
+
+    [Parameter]
+    public bool IsVisible { get; set; } = true;
 
     [Inject]
     private IJSRuntime JS { get; set; } = default!;
@@ -716,6 +721,9 @@
 
     private long _rxBytes;
     private long _txBytes;
+    private Timer? _uiRefreshThrottleTimer;
+    private int _uiRefreshScheduled;
+    private bool _wasVisible = true;
 
     private bool _isConnectedOrBusy => _isChanging || _device is not null;
 
@@ -727,6 +735,7 @@
 
     protected override void OnInitialized()
     {
+        _uiRefreshThrottleTimer = new Timer(OnUiRefreshThrottleElapsed, null, Timeout.Infinite, Timeout.Infinite);
         _baudRateText = Settings.Serial.DefaultBaudRate.ToString(CultureInfo.InvariantCulture);
         _entries = SessionHub.GetEntriesSnapshot();
         Settings.Changed += HandleSettingsChanged;
@@ -734,6 +743,21 @@
         SessionHub.JumpToEntryRequested += HandleJumpToEntryRequested;
         DeviceChangeMonitor.DevicesChanged += HandleHardwareDevicesChanged;
         RefreshPorts();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (IsVisible && !_wasVisible)
+        {
+            // 从其他页面切回终端时，立刻同步一次最新日志快照并滚到底部（若未上翻）。
+            _entries = SessionHub.GetEntriesSnapshot();
+            if (Settings.Serial.AutoScroll && !_userScrolledUp)
+            {
+                _pendingScrollToBottom = true;
+            }
+        }
+
+        _wasVisible = IsVisible;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -1364,57 +1388,82 @@
 
     private ValueTask OnPacketReceivedAsync(RawDataBus bus, RawDataPacket packet)
     {
+        if (_disposed || !ReferenceEquals(_bus, bus))
+        {
+            return ValueTask.CompletedTask;
+        }
+
         var payloadCopy = packet.Payload.ToArray();
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(packet.TimestampMs);
         var dir = packet.Direction == PacketDirection.Tx ? "TX" : "RX";
 
-        return new ValueTask(InvokeAsync(() =>
+        if (packet.Direction == PacketDirection.Tx)
         {
-            if (_disposed || !ReferenceEquals(_bus, bus))
+            Interlocked.Add(ref _txBytes, payloadCopy.Length);
+        }
+        else
+        {
+            Interlocked.Add(ref _rxBytes, payloadCopy.Length);
+        }
+
+        // 在后台总线线程直接入库（多行拆包合并为一次通知），避免每包阻塞在 UI 线程渲染上。
+        if (Settings.Serial.SplitByNewLine
+            && packet.Direction == PacketDirection.Rx
+            && Settings.Serial.DisplayMode == TerminalDisplayMode.Utf8
+            && payloadCopy.Length > 0)
+        {
+            var lines = DataHelper.SplitByteLines(payloadCopy);
+            if (lines.Count > 0)
+            {
+                var batch = new TerminalLogEntry[lines.Count];
+                for (var i = 0; i < lines.Count; i++)
+                {
+                    batch[i] = new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, lines[i]);
+                }
+
+                SessionHub.AddEntries(batch, Settings.Serial.MaxDisplayLines, preserveTop: _userScrolledUp);
+            }
+        }
+        else
+        {
+            SessionHub.AddEntry(
+                new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, payloadCopy),
+                Settings.Serial.MaxDisplayLines,
+                preserveTop: _userScrolledUp);
+        }
+
+        // 终端处于隐藏态（用户正在看协议/可视化/自定义画板）时跳过重绘，彻底消除后台无效 DOM 刷新。
+        if (IsVisible && Interlocked.CompareExchange(ref _uiRefreshScheduled, 1, 0) == 0)
+        {
+            _uiRefreshThrottleTimer?.Change(60, Timeout.Infinite);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    private void OnUiRefreshThrottleElapsed(object? state)
+    {
+        Interlocked.Exchange(ref _uiRefreshScheduled, 0);
+        if (_disposed || !IsVisible)
+        {
+            return;
+        }
+
+        _ = InvokeAsync(() =>
+        {
+            if (_disposed || !IsVisible)
             {
                 return;
             }
 
-            if (packet.Direction == PacketDirection.Tx)
-            {
-                _txBytes += payloadCopy.Length;
-            }
-            else
-            {
-                _rxBytes += payloadCopy.Length;
-            }
-
-            if (Settings.Serial.SplitByNewLine
-                && packet.Direction == PacketDirection.Rx
-                && Settings.Serial.DisplayMode == TerminalDisplayMode.Utf8
-                && payloadCopy.Length > 0)
-            {
-                var lines = DataHelper.SplitByteLines(payloadCopy);
-                foreach (var lineBytes in lines)
-                {
-                    SessionHub.AddEntry(
-                        new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, lineBytes),
-                        Settings.Serial.MaxDisplayLines,
-                        preserveTop: _userScrolledUp);
-                }
-            }
-            else
-            {
-                SessionHub.AddEntry(
-                    new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, payloadCopy),
-                    Settings.Serial.MaxDisplayLines,
-                    preserveTop: _userScrolledUp);
-            }
-
             _entries = SessionHub.GetEntriesSnapshot();
-
             if (Settings.Serial.AutoScroll && !_userScrolledUp)
             {
                 _pendingScrollToBottom = true;
             }
 
             StateHasChanged();
-        }));
+        });
     }
 
     private void AppendSystemEntry(string message)
@@ -1468,6 +1517,7 @@
     private async Task JumpToBottomAsync()
     {
         _userScrolledUp = false;
+        _pendingScrollToBottom = true;
         TrimEntriesToLimit();
         if (_jsModule is not null)
         {
@@ -1645,6 +1695,7 @@
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _uiRefreshThrottleTimer?.Dispose();
         Settings.Changed -= HandleSettingsChanged;
         SessionHub.RulesChanged -= HandleFilterRulesChanged;
         SessionHub.JumpToEntryRequested -= HandleJumpToEntryRequested;

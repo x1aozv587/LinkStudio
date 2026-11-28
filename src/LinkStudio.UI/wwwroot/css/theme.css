@@ -2005,6 +2005,11 @@ input[type="number"] {
     left: auto;
 }
 
+.ls-select-menu.is-upward {
+    top: auto;
+    bottom: calc(100% + 6px);
+}
+
 .ls-port-select .ls-select-menu {
     left: 0;
     right: auto;
