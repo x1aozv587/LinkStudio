@@ -6,7 +6,7 @@ namespace LinkStudio.Core.Bus
     public enum PacketDirection : byte { Rx, Tx }
 
     /// <summary>通道的类别。同一类别可以有多个不同 ID 的通道实例。</summary>
-    public enum ChannelKind : byte { Serial, VirtualMcu, TcpClient, TcpServer, Udp, HttpServer, MqttBroker }
+    public enum ChannelKind : byte { Serial, VirtualMcu, TcpClient, TcpServer, Udp, HttpServer, MqttBroker, LogReplay }
 
     /// <summary>在总线中传递的原始数据包，可由多个订阅者共同读取。</summary>
     /// <param name="ChannelId">通道实例的 ID，用于匹配订阅过滤条件。</param>

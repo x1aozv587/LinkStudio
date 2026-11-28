@@ -1,5 +1,6 @@
 @using System.Globalization
 @using System.Text
+@using LinkStudio.Core.Processing
 @implements IAsyncDisposable
 
 <section class="ls-widget-card ls-wave-widget" aria-label="实时波形图">
@@ -39,6 +40,37 @@
                     @onclick="AddCurrentInputAsync">
                 + 添加
             </button>
+
+            <!-- V0.6 实时信号滤波对比（同屏叠加原始曲线与滤波后曲线） -->
+            <div class="ls-wave-filter-controls">
+                <LinkSelect TValue="SignalFilterKind"
+                            Options="_filterOptions"
+                            Value="_filterKind"
+                            ValueChanged="v => _filterKind = v"
+                            CssClass="ls-wave-filter-select"
+                            AriaLabel="信号滤波叠加" />
+
+                @if (_filterKind == SignalFilterKind.MovingAverage)
+                {
+                    <LinkSelect TValue="int"
+                                Options="_windowOptions"
+                                Value="_filterWindow"
+                                ValueChanged="v => _filterWindow = v"
+                                CssClass="ls-wave-param-select"
+                                IsMono="true"
+                                AriaLabel="滑动平均窗口大小" />
+                }
+                else if (_filterKind == SignalFilterKind.LowPass)
+                {
+                    <LinkSelect TValue="double"
+                                Options="_alphaOptions"
+                                Value="_filterAlpha"
+                                ValueChanged="v => _filterAlpha = v"
+                                CssClass="ls-wave-param-select"
+                                IsMono="true"
+                                AriaLabel="低通滤波系数" />
+                }
+            </div>
         </div>
 
         <!-- 已手动添加的通道胶囊（点击开关曲线，点 × 移除） -->
@@ -148,7 +180,7 @@
                         <line x1="@PlotLeft" y1="@F(zeroY)" x2="@PlotRight" y2="@F(zeroY)" class="ls-wave-zero-line" />
                     }
 
-                    <!-- 多通道折线（仅绘制当前滑动窗口切片，自动放大 Y 轴） -->
+                    <!-- 多通道折线（开启滤波时原始曲线半透明，虚线叠加滤波结果便于同屏对比算法效果） -->
                     @foreach (var slice in slicedList)
                     {
                         if (slice.Samples.Count < 2)
@@ -156,15 +188,32 @@
                             continue;
                         }
 
+                        var hasFilter = _filterKind != SignalFilterKind.None && slice.FilteredSamples is not null;
                         var pts = BuildPolylinePoints(slice.Samples, bounds.Min, bounds.Max, PlotLeft, PlotWidth, PlotBottom, PlotHeight, out var lastX, out var lastY);
                         <g>
                             <polyline fill="none"
                                       stroke="@slice.Color"
-                                      stroke-width="2"
+                                      stroke-width="@(hasFilter ? "1.4" : "2")"
+                                      opacity="@(hasFilter ? "0.38" : "1")"
                                       stroke-linecap="round"
                                       stroke-linejoin="round"
                                       points="@pts" />
-                            <circle cx="@F(lastX)" cy="@F(lastY)" r="3.5" fill="@slice.Color" />
+                            @if (!hasFilter)
+                            {
+                                <circle cx="@F(lastX)" cy="@F(lastY)" r="3.5" fill="@slice.Color" />
+                            }
+                            else
+                            {
+                                var filteredPts = BuildPolylinePoints(slice.FilteredSamples!, bounds.Min, bounds.Max, PlotLeft, PlotWidth, PlotBottom, PlotHeight, out var fLastX, out var fLastY);
+                                <polyline fill="none"
+                                          stroke="@slice.Color"
+                                          stroke-width="2.2"
+                                          stroke-dasharray="6 3"
+                                          stroke-linecap="round"
+                                          stroke-linejoin="round"
+                                          points="@filteredPts" />
+                                <circle cx="@F(fLastX)" cy="@F(fLastY)" r="3.5" fill="@slice.Color" />
+                            }
                         </g>
                     }
 
@@ -330,8 +379,34 @@
     [Parameter]
     public EventCallback<string> OnToggleVisibility { get; set; }
 
+    private static readonly IReadOnlyList<LinkSelect<SignalFilterKind>.SelectOption> _filterOptions =
+    [
+        new(SignalFilterKind.None, "原始波形"),
+        new(SignalFilterKind.MovingAverage, "叠加：滑动平均"),
+        new(SignalFilterKind.LowPass, "叠加：一阶低通"),
+        new(SignalFilterKind.Delta, "叠加：一阶差分")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<int>.SelectOption> _windowOptions =
+    [
+        new(3, "N=3"),
+        new(5, "N=5"),
+        new(9, "N=9"),
+        new(15, "N=15")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<double>.SelectOption> _alphaOptions =
+    [
+        new(0.1, "α=0.10"),
+        new(0.25, "α=0.25"),
+        new(0.5, "α=0.50")
+    ];
+
     private string _inputKey = string.Empty;
     private bool _isSuggestOpen;
+    private SignalFilterKind _filterKind = SignalFilterKind.None;
+    private int _filterWindow = 5;
+    private double _filterAlpha = 0.25;
     private double? _hoverSvgX;
     private double? _hoverSvgY;
     private IReadOnlyList<NumericSeriesSnapshot>? _frozenSeries;
@@ -369,6 +444,7 @@
         string? Unit,
         IReadOnlyList<NumericSample> FullSamples,
         IReadOnlyList<NumericSample> Samples,
+        IReadOnlyList<NumericSample>? FilteredSamples,
         int StartIndex,
         int EndIndex);
 
@@ -585,12 +661,32 @@
                 sliced = arr;
             }
 
+            IReadOnlyList<NumericSample>? filteredSliced = null;
+            if (_filterKind != SignalFilterKind.None)
+            {
+                var rawValues = new double[count];
+                for (var j = 0; j < count; j++)
+                {
+                    rawValues[j] = series.Samples[j].Value;
+                }
+
+                var filteredAll = SignalProcessor.Apply(rawValues, _filterKind, _filterWindow, _filterAlpha);
+                var filteredArr = new NumericSample[sliceLen];
+                for (var j = 0; j < sliceLen; j++)
+                {
+                    filteredArr[j] = new NumericSample(series.Samples[startIdx + j].TimestampMs, filteredAll[startIdx + j]);
+                }
+
+                filteredSliced = filteredArr;
+            }
+
             result.Add(new SeriesSlice(
                 series.Key,
                 Palette[i % Palette.Length],
                 series.Unit,
                 series.Samples,
                 sliced,
+                filteredSliced,
                 startIdx,
                 endIdx));
         }

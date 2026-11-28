@@ -26,6 +26,7 @@ public partial class MainWindow : Window
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddWpfBlazorWebView();
         serviceCollection.AddSingleton<IFolderPickerService, WindowsFolderPickerService>();
+        serviceCollection.AddSingleton<IFilePickerService, WindowsFilePickerService>();
         serviceCollection.AddSingleton<IFilterWindowService, WindowsFilterWindowService>();
         serviceCollection.AddSingleton<IPresetWindowService, WindowsPresetWindowService>();
         serviceCollection.AddSingleton<IDeviceChangeMonitor>(_deviceChangeMonitor);

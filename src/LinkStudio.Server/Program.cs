@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<IFolderPickerService, UnsupportedFolderPickerService>();
+builder.Services.AddSingleton<IFilePickerService, UnsupportedFilePickerService>();
 builder.Services.AddSingleton<IFilterWindowService, UnsupportedFilterWindowService>();
 builder.Services.AddSingleton<IPresetWindowService, UnsupportedPresetWindowService>();
 builder.Services.AddSingleton<IDeviceChangeMonitor, UnsupportedDeviceChangeMonitor>();
@@ -36,6 +37,14 @@ internal sealed class UnsupportedFolderPickerService : IFolderPickerService
     public bool IsSupported => false;
 
     public Task<string?> PickFolderAsync(string title, string? initialDirectory = null) =>
+        Task.FromResult<string?>(null);
+}
+
+internal sealed class UnsupportedFilePickerService : IFilePickerService
+{
+    public bool IsSupported => false;
+
+    public Task<string?> PickFileAsync(string title, string filter, string? initialDirectory = null) =>
         Task.FromResult<string?>(null);
 }
 
