@@ -14,13 +14,17 @@ namespace LinkStudio.Desktop.Win;
 public partial class MainWindow : Window
 {
     private readonly IFilterWindowService _filterWindowService;
+    private readonly WindowsDeviceChangeMonitor _deviceChangeMonitor;
 
     public MainWindow()
     {
+        _deviceChangeMonitor = new WindowsDeviceChangeMonitor();
+
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddWpfBlazorWebView();
         serviceCollection.AddSingleton<IFolderPickerService, WindowsFolderPickerService>();
         serviceCollection.AddSingleton<IFilterWindowService, WindowsFilterWindowService>();
+        serviceCollection.AddSingleton<IDeviceChangeMonitor>(_deviceChangeMonitor);
         serviceCollection.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
         serviceCollection.AddSingleton<WorkbenchSettings>();
         serviceCollection.AddSingleton<TerminalSessionHub>();
@@ -34,7 +38,14 @@ public partial class MainWindow : Window
 
         InitializeComponent();
 
-        // 主窗口关闭时同步关闭独立搜索/过滤窗口，避免后台残留进程。
-        Closed += (_, _) => _filterWindowService.Close();
+        // 挂载 Win32 WM_DEVICECHANGE 监听，插拔 USB 串口自动刷新列表。
+        _deviceChangeMonitor.Attach(this);
+
+        // 主窗口关闭时同步关闭独立搜索/过滤窗口并释放热插拔监听。
+        Closed += (_, _) =>
+        {
+            _filterWindowService.Close();
+            _deviceChangeMonitor.Dispose();
+        };
     }
 }
