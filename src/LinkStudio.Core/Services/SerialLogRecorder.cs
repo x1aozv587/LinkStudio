@@ -1,5 +1,6 @@
 using System.Text;
 using LinkStudio.Core.Bus;
+using LinkStudio.Core.Helper;
 using Serilog;
 
 namespace LinkStudio.Core.Services
@@ -27,7 +28,8 @@ namespace LinkStudio.Core.Services
         bool ShowDirection,
         bool ShowPayload,
         bool FormatPayloadAsHex,
-        IReadOnlyList<ISerialLogColumn>? ExtraColumns = null);
+        IReadOnlyList<ISerialLogColumn>? ExtraColumns = null,
+        bool SplitByNewLine = false);
 
     /// <summary>
     /// 串口收发数据日志记录器（RawDataBus 的独立订阅者）。
@@ -102,6 +104,28 @@ namespace LinkStudio.Core.Services
             }
 
             var options = _optionsProvider();
+            if (options.SplitByNewLine && !options.FormatPayloadAsHex && !packet.Payload.IsEmpty)
+            {
+                var chunks = DataHelper.SplitByteLines(packet.Payload.Span);
+                var builder = new StringBuilder();
+                foreach (var chunk in chunks)
+                {
+                    var linePacket = packet with { Payload = chunk };
+                    var formatted = FormatTextLine(linePacket, options);
+                    if (formatted.Length > 0)
+                    {
+                        builder.Append(formatted).Append(Environment.NewLine);
+                    }
+                }
+
+                if (builder.Length > 0)
+                {
+                    await _stream.WriteAsync(Encoding.UTF8.GetBytes(builder.ToString()), ct);
+                }
+
+                return;
+            }
+
             var line = FormatTextLine(packet, options);
             if (line.Length == 0)
             {

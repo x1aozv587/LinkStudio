@@ -111,6 +111,38 @@ namespace LinkStudio.Core.Tests
             Assert.Equal(new byte[] { 0x01, 0x02, 0x03, 0xFE, 0xFF }, actualBytes);
         }
 
+        [Fact]
+        public async Task TextLog_SplitsMultiLinePacketWhenSplitByNewLineEnabled()
+        {
+            var bus = new RawDataBus();
+            var options = new SerialLogOptions(
+                IsBinary: false,
+                ShowTimestamp: false,
+                ShowDirection: true,
+                ShowPayload: true,
+                FormatPayloadAsHex: false,
+                SplitByNewLine: true);
+
+            string filePath;
+            await using (var recorder = new SerialLogRecorder(bus, "serial-com3", _tempDir, "COM3", () => options))
+            {
+                filePath = recorder.FilePath;
+                var packet = new RawDataPacket(
+                    ChannelId: "serial-com3",
+                    ChannelKind: ChannelKind.Serial,
+                    Direction: PacketDirection.Rx,
+                    TimestampMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    SeqNo: 10,
+                    Payload: Encoding.UTF8.GetBytes("line-1\r\r\nline-2\n\r\nline-3\r\n"));
+
+                await bus.PublishAsync(packet);
+                await bus.DisposeAsync();
+            }
+
+            var lines = await File.ReadAllLinesAsync(filePath, Encoding.UTF8);
+            Assert.Equal(new[] { "[RX] line-1", "[RX] line-2", "[RX] line-3" }, lines);
+        }
+
         public void Dispose()
         {
             if (Directory.Exists(_tempDir))

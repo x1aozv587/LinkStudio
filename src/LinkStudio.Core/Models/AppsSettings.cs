@@ -70,6 +70,7 @@ namespace LinkStudio.Core.Models
                     ShowTimestamp = true,
                     ShowDirection = true,
                     ShowPayload = true,
+                    SplitByNewLine = true,
                     IsAutoScroll = true,
                     MaxDisplayLines = 500,
                     AutoSaveSerialLogOnOpen = false,
@@ -121,6 +122,7 @@ namespace LinkStudio.Core.Models
         public bool ShowTimestamp { get; set; } = true;
         public bool ShowDirection { get; set; } = true;
         public bool ShowPayload { get; set; } = true;
+        public bool SplitByNewLine { get; set; } = true;
         public int MaxDisplayLines { get; set; } = 500;
         public bool AutoSaveSerialLogOnOpen { get; set; }
         public string SerialLogDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "logs", "serial");

@@ -61,7 +61,9 @@
     [Inject]
     private IAppsSettingsService SettingsService { get; set; } = default!;
 
-    private readonly WorkbenchSettings _settings = new();
+    [Inject]
+    private WorkbenchSettings _settings { get; set; } = default!;
+
     private AppPage _activePage = AppPage.Terminal;
     private CancellationTokenSource? _saveDebounceCts;
     private bool _lastAppLogEnabled;

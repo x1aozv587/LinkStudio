@@ -1,0 +1,111 @@
+@typeparam TValue
+
+<div class="ls-select-box @CssClass @(Disabled ? "is-disabled" : string.Empty)">
+    <button type="button"
+            class="ls-select-trigger @(IsMono ? "ls-mono" : string.Empty) @(_isOpen ? "is-open" : string.Empty)"
+            aria-haspopup="listbox"
+            aria-expanded="@_isOpen"
+            aria-label="@AriaLabel"
+            disabled="@Disabled"
+            @onclick="Toggle">
+        <span class="ls-select-value">@CurrentLabel</span>
+        <svg class="ls-select-chevron" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+        </svg>
+    </button>
+
+    @if (_isOpen && !Disabled)
+    {
+        <div class="ls-menu-backdrop" @onclick="Close"></div>
+        <div class="ls-combobox-menu ls-select-menu @(IsMono ? "ls-mono" : string.Empty)" role="listbox" aria-label="@AriaLabel">
+            @if (Options.Count == 0)
+            {
+                <div class="ls-select-empty">@EmptyText</div>
+            }
+            else
+            {
+                @foreach (var option in Options)
+                {
+                    var isSelected = EqualityComparer<TValue>.Default.Equals(option.Value, Value);
+                    <button type="button"
+                            role="option"
+                            aria-selected="@isSelected"
+                            class="ls-combobox-option @(isSelected ? "is-selected" : string.Empty)"
+                            @onclick="() => SelectAsync(option.Value)">
+                        <span>@option.Label</span>
+                        @if (isSelected)
+                        {
+                            <span class="ls-option-check">✓</span>
+                        }
+                    </button>
+                }
+            }
+        </div>
+    }
+</div>
+
+@code {
+    public sealed record SelectOption(TValue Value, string Label);
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<SelectOption> Options { get; set; } = [];
+
+    [Parameter]
+    public TValue Value { get; set; } = default!;
+
+    [Parameter]
+    public EventCallback<TValue> ValueChanged { get; set; }
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    [Parameter]
+    public bool IsMono { get; set; }
+
+    [Parameter]
+    public string? CssClass { get; set; }
+
+    [Parameter]
+    public string? AriaLabel { get; set; }
+
+    [Parameter]
+    public string EmptyText { get; set; } = "暂无选项";
+
+    private bool _isOpen;
+
+    private string CurrentLabel
+    {
+        get
+        {
+            foreach (var option in Options)
+            {
+                if (EqualityComparer<TValue>.Default.Equals(option.Value, Value))
+                {
+                    return option.Label;
+                }
+            }
+
+            return Options.Count == 0 ? EmptyText : Value?.ToString() ?? EmptyText;
+        }
+    }
+
+    private void Toggle()
+    {
+        if (!Disabled)
+        {
+            _isOpen = !_isOpen;
+        }
+    }
+
+    private void Close() => _isOpen = false;
+
+    private async Task SelectAsync(TValue nextValue)
+    {
+        _isOpen = false;
+        if (!EqualityComparer<TValue>.Default.Equals(Value, nextValue))
+        {
+            Value = nextValue;
+            await ValueChanged.InvokeAsync(nextValue);
+        }
+    }
+}
