@@ -1,5 +1,6 @@
 using LinkStudio.Core.Services;
 using LinkStudio.Core.Services.Interfaces;
+using LinkStudio.Core.Workspaces;
 using LinkStudio.UI.Services;
 using LinkStudio.UI.State;
 
@@ -13,6 +14,7 @@ builder.Services.AddSingleton<IFilterWindowService, UnsupportedFilterWindowServi
 builder.Services.AddSingleton<IPresetWindowService, UnsupportedPresetWindowService>();
 builder.Services.AddSingleton<IDeviceChangeMonitor, UnsupportedDeviceChangeMonitor>();
 builder.Services.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
+builder.Services.AddSingleton<IWorkspaceStore>(_ => new JsonWorkspaceStore());
 builder.Services.AddSingleton<WorkbenchSettings>();
 builder.Services.AddSingleton<TerminalSessionHub>();
 

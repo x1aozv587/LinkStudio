@@ -429,8 +429,27 @@ export function attachWaveHoverTracker(svg, dotNetRef) {
         }
     };
 
+    const onWheel = (e) => {
+        const ctm = svg.getScreenCTM();
+        if (!ctm) {
+            return;
+        }
+
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        const local = pt.matrixTransform(ctm.inverse());
+        // 仅在绘图区范围内拦截滚轮用于波形缩放，避免影响其他区域滚动。
+        if (local.x >= 50 && local.x <= 872 && local.y >= 8 && local.y <= 258) {
+            e.preventDefault();
+            const ratio = Math.min(1, Math.max(0, (local.x - 58) / (864 - 58)));
+            dotNetRef.invokeMethodAsync("OnSvgWheelZoom", ratio, e.deltaY);
+        }
+    };
+
     svg.addEventListener("pointermove", onPointerMove);
     svg.addEventListener("pointerleave", onPointerLeave);
+    svg.addEventListener("wheel", onWheel, { passive: false });
 
     return {
         dispose() {
@@ -440,6 +459,135 @@ export function attachWaveHoverTracker(svg, dotNetRef) {
             }
             svg.removeEventListener("pointermove", onPointerMove);
             svg.removeEventListener("pointerleave", onPointerLeave);
+            svg.removeEventListener("wheel", onWheel);
+        }
+    };
+}
+
+export function attachCanvasDragReorder(grid, dotNetRef) {
+    if (!grid || !dotNetRef) {
+        return null;
+    }
+
+    let sourceCell = null;
+    let sourceId = null;
+    let targetCell = null;
+    let targetId = null;
+    let ghostEl = null;
+
+    const clearTarget = () => {
+        if (targetCell) {
+            targetCell.classList.remove("is-drag-over");
+            targetCell = null;
+            targetId = null;
+        }
+    };
+
+    const removeGhost = () => {
+        if (ghostEl) {
+            ghostEl.remove();
+            ghostEl = null;
+        }
+    };
+
+    const positionGhost = (x, y) => {
+        if (!ghostEl) {
+            return;
+        }
+        ghostEl.style.transform = `translate3d(${Math.round(x + 14)}px, ${Math.round(y + 12)}px, 0) rotate(0.8deg)`;
+    };
+
+    const onPointerDown = (e) => {
+        if (e.button !== 0) {
+            return;
+        }
+
+        // 仅在按住拖动把手（或工具栏空白处，排除输入框与按钮）时启动组件拖拽。
+        const handle = e.target?.closest?.("[data-drag-handle]");
+        if (!handle || e.target?.closest?.("input, button")) {
+            return;
+        }
+
+        const cell = handle.closest("[data-widget-id]");
+        if (!cell) {
+            return;
+        }
+
+        sourceCell = cell;
+        sourceId = cell.dataset.widgetId;
+        sourceCell.classList.add("is-dragging");
+
+        // 创建跟随鼠标的悬浮预览卡片，让拖拽过程有清晰直观的视觉反馈。
+        const titleInput = cell.querySelector(".ls-cell-title-input");
+        const label = (titleInput && titleInput.value.trim()) || "移动组件";
+        ghostEl = document.createElement("div");
+        ghostEl.className = "ls-drag-ghost";
+        ghostEl.textContent = `⋮⋮  ${label}`;
+        document.body.appendChild(ghostEl);
+        positionGhost(e.clientX, e.clientY);
+
+        grid.setPointerCapture(e.pointerId);
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+    };
+
+    const onPointerMove = (e) => {
+        if (!sourceCell) {
+            return;
+        }
+
+        positionGhost(e.clientX, e.clientY);
+
+        const hit = document.elementsFromPoint(e.clientX, e.clientY)
+            .map((el) => el.closest?.("[data-widget-id]"))
+            .find((el) => el && el !== sourceCell && grid.contains(el));
+
+        if (hit !== targetCell) {
+            clearTarget();
+            if (hit) {
+                targetCell = hit;
+                targetId = hit.dataset.widgetId;
+                targetCell.classList.add("is-drag-over");
+            }
+        }
+    };
+
+    const finishDrag = (e) => {
+        if (!sourceCell) {
+            return;
+        }
+
+        const fromId = sourceId;
+        const toId = targetId;
+
+        sourceCell.classList.remove("is-dragging");
+        sourceCell = null;
+        sourceId = null;
+        clearTarget();
+        removeGhost();
+
+        if (grid.hasPointerCapture(e.pointerId)) {
+            grid.releasePointerCapture(e.pointerId);
+        }
+        document.body.style.userSelect = "";
+
+        if (fromId && toId && fromId !== toId) {
+            dotNetRef.invokeMethodAsync("OnWidgetReordered", fromId, toId);
+        }
+    };
+
+    grid.addEventListener("pointerdown", onPointerDown);
+    grid.addEventListener("pointermove", onPointerMove);
+    grid.addEventListener("pointerup", finishDrag);
+    grid.addEventListener("pointercancel", finishDrag);
+
+    return {
+        dispose() {
+            removeGhost();
+            grid.removeEventListener("pointerdown", onPointerDown);
+            grid.removeEventListener("pointermove", onPointerMove);
+            grid.removeEventListener("pointerup", finishDrag);
+            grid.removeEventListener("pointercancel", finishDrag);
         }
     };
 }

@@ -1,9 +1,10 @@
 @using LinkStudio.Core.Services
 @using LinkStudio.Core.Services.Interfaces
+@using LinkStudio.Core.Workspaces
 @implements IAsyncDisposable
 
 <div class="ls-app-shell" data-theme="@_settings.GetThemeKey()">
-    <!-- 最左侧极简导航：顶部是工作区入口，左下角是全局设置 -->
+    <!-- 最左侧极简导航：顶部是固定工具与自定义画板，左下角是全局设置 -->
     <aside class="ls-activity-rail" aria-label="主导航">
         <div class="ls-rail-top">
             <div class="ls-brand-mark" title="LinkStudio">LS</div>
@@ -12,7 +13,7 @@
                     class="ls-rail-btn @(_activePage == AppPage.Terminal ? "is-active" : string.Empty)"
                     title="串口终端"
                     aria-label="串口终端"
-                    @onclick="() => _activePage = AppPage.Terminal">
+                    @onclick="() => SelectBuiltInPage(AppPage.Terminal)">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="4 17 10 11 4 5" />
                     <line x1="12" y1="19" x2="20" y2="19" />
@@ -24,7 +25,7 @@
                     class="ls-rail-btn @(_activePage == AppPage.Protocol ? "is-active" : string.Empty)"
                     title="协议监视（NMEA / JSON 结构化解析）"
                     aria-label="协议监视"
-                    @onclick="() => _activePage = AppPage.Protocol">
+                    @onclick="() => SelectBuiltInPage(AppPage.Protocol)">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
@@ -35,7 +36,7 @@
                     class="ls-rail-btn @(_activePage == AppPage.Dashboard ? "is-active" : string.Empty)"
                     title="可视化仪表盘（波形图 / KPI / 天空图 / SNR）"
                     aria-label="可视化"
-                    @onclick="() => _activePage = AppPage.Dashboard">
+                    @onclick="() => SelectBuiltInPage(AppPage.Dashboard)">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="7" height="9" rx="1.5" />
                     <rect x="14" y="3" width="7" height="5" rx="1.5" />
@@ -44,6 +45,77 @@
                 </svg>
                 <span class="ls-rail-label">可视化</span>
             </button>
+
+            <div class="ls-rail-divider" aria-hidden="true"></div>
+
+            <!-- 用户已保存的自定义画板列表 -->
+            @foreach (var ws in _workspaces)
+            {
+                var wsId = ws.Id;
+                var isSelected = _activePage == AppPage.CustomWorkspace
+                    && string.Equals(_activeWorkspaceId, ws.Id, StringComparison.Ordinal);
+                <button type="button"
+                        class="ls-rail-btn @(isSelected ? "is-active" : string.Empty)"
+                        title="@ws.Name（自定义画板）"
+                        aria-label="@ws.Name"
+                        @onclick="() => SelectWorkspace(wsId)">
+                    <span class="ls-rail-ws-badge">@GetWorkspaceMonogram(ws.Name)</span>
+                    <span class="ls-rail-label ls-rail-ws-label">@ws.Name</span>
+                </button>
+            }
+
+            <!-- 左侧加号：新建空白画板 / 从模板创建 / 粘贴 JSON 导入 -->
+            <div class="ls-rail-add-wrap">
+                <button type="button"
+                        class="ls-rail-btn ls-rail-add-btn @(_isCreateMenuOpen ? "is-active" : string.Empty)"
+                        title="新建自定义画板"
+                        aria-label="新建自定义画板"
+                        @onclick="ToggleCreateMenu">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    <span class="ls-rail-label">新建</span>
+                </button>
+
+                @if (_isCreateMenuOpen)
+                {
+                    <div class="ls-menu-backdrop" @onclick="CloseCreateMenu"></div>
+                    <div class="ls-rail-create-menu" role="dialog" aria-label="新建自定义画板">
+                        <div class="ls-create-menu-title">新建自定义画板</div>
+                        <button type="button" class="ls-combobox-option" @onclick="() => CreateWorkspaceAsync(WorkspaceDocument.CreateBlank())">
+                            <span>空白画板</span>
+                            <span class="ls-suggest-val">自由拼装</span>
+                        </button>
+                        <button type="button" class="ls-combobox-option" @onclick="() => CreateWorkspaceAsync(WorkspaceDocument.CreateImuTemplate())">
+                            <span>IMU 调试模板</span>
+                            <span class="ls-suggest-val">KPI + 波形</span>
+                        </button>
+                        <button type="button" class="ls-combobox-option" @onclick="() => CreateWorkspaceAsync(WorkspaceDocument.CreateGnssTemplate())">
+                            <span>GNSS 监控模板</span>
+                            <span class="ls-suggest-val">天空图 + SNR</span>
+                        </button>
+
+                        <div class="ls-create-import-box">
+                            <div class="ls-create-import-label">或粘贴 .linkworkspace JSON 导入</div>
+                            <textarea class="ls-input ls-create-import-input ls-mono"
+                                      rows="3"
+                                      placeholder="粘贴导出的工作空间 JSON..."
+                                      @bind="_importJson"></textarea>
+                            @if (_importError is not null)
+                            {
+                                <div class="ls-rule-inline-error">@_importError</div>
+                            }
+                            <button type="button"
+                                    class="ls-btn-subtle is-accent"
+                                    disabled="@string.IsNullOrWhiteSpace(_importJson)"
+                                    @onclick="ImportWorkspaceAsync">
+                                导入画板
+                            </button>
+                        </div>
+                    </div>
+                }
+            </div>
         </div>
 
         <div class="ls-rail-bottom">
@@ -51,7 +123,7 @@
                     class="ls-rail-btn @(_activePage == AppPage.Settings ? "is-active" : string.Empty)"
                     title="全局设置"
                     aria-label="全局设置"
-                    @onclick="() => _activePage = AppPage.Settings">
+                    @onclick="() => SelectBuiltInPage(AppPage.Settings)">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3" />
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -61,7 +133,7 @@
         </div>
     </aside>
 
-    <!-- 主内容舞台：终端保持挂载，切到设置页时不断开串口、不丢历史日志 -->
+    <!-- 主内容舞台：终端保持挂载，切到其他页时不断开串口、不丢历史日志 -->
     <main class="ls-stage">
         <div class="ls-pane @(_activePage == AppPage.Terminal ? string.Empty : "ls-pane-hidden")">
             <TerminalView Settings="_settings" />
@@ -81,6 +153,15 @@
             </div>
         }
 
+        @if (_activePage == AppPage.CustomWorkspace && ActiveWorkspace is not null)
+        {
+            <div class="ls-pane">
+                <CustomWorkspaceView Workspace="ActiveWorkspace"
+                                     OnWorkspaceMutated="ScheduleSaveActiveWorkspace"
+                                     OnDeleteWorkspace="DeleteWorkspaceAsync" />
+            </div>
+        }
+
         @if (_activePage == AppPage.Settings)
         {
             <div class="ls-pane">
@@ -96,6 +177,7 @@
         Terminal,
         Protocol,
         Dashboard,
+        CustomWorkspace,
         Settings
     }
 
@@ -103,14 +185,29 @@
     private IAppsSettingsService SettingsService { get; set; } = default!;
 
     [Inject]
+    private IWorkspaceStore WorkspaceStore { get; set; } = default!;
+
+    [Inject]
     private WorkbenchSettings _settings { get; set; } = default!;
 
+    private readonly List<WorkspaceDocument> _workspaces = [];
     private AppPage _activePage = AppPage.Terminal;
+    private string? _activeWorkspaceId;
+    private bool _isCreateMenuOpen;
+    private string _importJson = string.Empty;
+    private string? _importError;
     private CancellationTokenSource? _saveDebounceCts;
+    private CancellationTokenSource? _wsSaveDebounceCts;
+    private WorkspaceDocument? _dirtyWorkspace;
     private bool _lastAppLogEnabled;
     private string _lastAppLogDir = string.Empty;
     private bool _settingsLoaded;
     private bool _disposed;
+
+    private WorkspaceDocument? ActiveWorkspace =>
+        string.IsNullOrEmpty(_activeWorkspaceId)
+            ? null
+            : _workspaces.FirstOrDefault(w => string.Equals(w.Id, _activeWorkspaceId, StringComparison.Ordinal));
 
     protected override async Task OnInitializedAsync()
     {
@@ -129,6 +226,152 @@
         _settingsLoaded = true;
         ApplyAppLoggingIfChanged(force: true);
         _settings.NotifyChanged();
+
+        try
+        {
+            var savedWorkspaces = await WorkspaceStore.LoadAllAsync();
+            _workspaces.Clear();
+            _workspaces.AddRange(savedWorkspaces);
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Warning(error, "加载自定义工作空间列表失败");
+        }
+    }
+
+    private void SelectBuiltInPage(AppPage page)
+    {
+        _activePage = page;
+        _isCreateMenuOpen = false;
+    }
+
+    private void SelectWorkspace(string workspaceId)
+    {
+        _activeWorkspaceId = workspaceId;
+        _activePage = AppPage.CustomWorkspace;
+        _isCreateMenuOpen = false;
+    }
+
+    private void ToggleCreateMenu()
+    {
+        _isCreateMenuOpen = !_isCreateMenuOpen;
+        _importError = null;
+    }
+
+    private void CloseCreateMenu()
+    {
+        _isCreateMenuOpen = false;
+        _importError = null;
+    }
+
+    private async Task CreateWorkspaceAsync(WorkspaceDocument doc)
+    {
+        _isCreateMenuOpen = false;
+        _importError = null;
+        _workspaces.Add(doc);
+        _activeWorkspaceId = doc.Id;
+        _activePage = AppPage.CustomWorkspace;
+
+        try
+        {
+            await WorkspaceStore.SaveAsync(doc);
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Error(error, "保存新建工作空间失败");
+        }
+    }
+
+    private async Task ImportWorkspaceAsync()
+    {
+        var parsed = WorkspaceStore.TryDeserialize(_importJson);
+        if (parsed is null)
+        {
+            _importError = "JSON 格式无效，请检查粘贴内容。";
+            return;
+        }
+
+        // 导入时生成新 Id，避免覆盖本机已有的同名/同 Id 画板。
+        parsed.Id = Guid.NewGuid().ToString("N")[..10];
+        parsed.CreatedAt = DateTimeOffset.UtcNow;
+        _importJson = string.Empty;
+        _importError = null;
+        await CreateWorkspaceAsync(parsed);
+    }
+
+    private void ScheduleSaveActiveWorkspace()
+    {
+        var current = ActiveWorkspace;
+        if (current is null)
+        {
+            return;
+        }
+
+        _dirtyWorkspace = current;
+        _wsSaveDebounceCts?.Cancel();
+        _wsSaveDebounceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _wsSaveDebounceCts = cts;
+        _ = SaveWorkspaceAfterDelayAsync(current, cts.Token);
+    }
+
+    private async Task SaveWorkspaceAfterDelayAsync(WorkspaceDocument doc, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(250, ct);
+            await WorkspaceStore.SaveAsync(doc, ct);
+            if (ReferenceEquals(_dirtyWorkspace, doc))
+            {
+                _dirtyWorkspace = null;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 被更新的保存请求取代属于预期行为。
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Error(error, "保存自定义工作空间 {WorkspaceId} 失败", doc.Id);
+        }
+    }
+
+    private async Task DeleteWorkspaceAsync(string workspaceId)
+    {
+        _workspaces.RemoveAll(w => string.Equals(w.Id, workspaceId, StringComparison.Ordinal));
+        if (string.Equals(_activeWorkspaceId, workspaceId, StringComparison.Ordinal))
+        {
+            var next = _workspaces.LastOrDefault();
+            if (next is not null)
+            {
+                _activeWorkspaceId = next.Id;
+            }
+            else
+            {
+                _activeWorkspaceId = null;
+                _activePage = AppPage.Dashboard;
+            }
+        }
+
+        try
+        {
+            await WorkspaceStore.DeleteAsync(workspaceId);
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Error(error, "删除工作空间 {WorkspaceId} 失败", workspaceId);
+        }
+    }
+
+    private static string GetWorkspaceMonogram(string name)
+    {
+        var trimmed = name.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return "WS";
+        }
+
+        return trimmed.Length <= 2 ? trimmed : trimmed[..2];
     }
 
     private void HandleSettingsChanged()
@@ -195,6 +438,20 @@
         _settings.Changed -= HandleSettingsChanged;
         _saveDebounceCts?.Cancel();
         _saveDebounceCts?.Dispose();
+        _wsSaveDebounceCts?.Cancel();
+        _wsSaveDebounceCts?.Dispose();
+
+        if (_dirtyWorkspace is not null)
+        {
+            try
+            {
+                await WorkspaceStore.SaveAsync(_dirtyWorkspace);
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Warning(error, "退出时保存工作空间失败");
+            }
+        }
 
         if (_settingsLoaded)
         {
