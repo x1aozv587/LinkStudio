@@ -78,5 +78,40 @@ namespace LinkStudio.Core.Helper
             return true;
         }
 
+        /// <summary>
+        /// 按 \r / \n 拆分单次接收的字节块为多行，自动合并连续的 \r\n、\r\r\n 等换行序列，不产生空行。
+        /// 若整包不含换行则原样返回 1 项。
+        /// </summary>
+        public static List<byte[]> SplitByteLines(ReadOnlySpan<byte> data)
+        {
+            var lines = new List<byte[]>();
+            if (data.IsEmpty)
+            {
+                return lines;
+            }
+
+            var start = 0;
+            for (var i = 0; i < data.Length; i++)
+            {
+                var b = data[i];
+                if (b == (byte)'\n' || b == (byte)'\r')
+                {
+                    if (i > start)
+                    {
+                        lines.Add(data.Slice(start, i - start).ToArray());
+                    }
+
+                    start = i + 1;
+                }
+            }
+
+            if (start < data.Length)
+            {
+                lines.Add(data.Slice(start).ToArray());
+            }
+
+            return lines;
+        }
+
     }
 }

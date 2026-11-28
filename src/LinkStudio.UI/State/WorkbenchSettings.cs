@@ -56,6 +56,7 @@ namespace LinkStudio.UI.State
         public bool ShowTimestamp { get; set; } = true;
         public bool ShowDirection { get; set; } = true;
         public bool ShowPayload { get; set; } = true;
+        public bool SplitByNewLine { get; set; } = true;
         public bool AutoScroll { get; set; } = true;
         public int MaxDisplayLines { get; set; } = 500;
 
@@ -128,7 +129,8 @@ namespace LinkStudio.UI.State
                 ShowDirection: Serial.ShowDirection,
                 ShowPayload: Serial.ShowPayload,
                 FormatPayloadAsHex: Serial.DisplayMode == TerminalDisplayMode.Hex,
-                ExtraColumns: extraColumns);
+                ExtraColumns: extraColumns,
+                SplitByNewLine: Serial.SplitByNewLine);
         }
 
         public void ApplyFrom(AppsSettings source)
@@ -162,6 +164,7 @@ namespace LinkStudio.UI.State
             Serial.ShowTimestamp = source.Receive.ShowTimestamp;
             Serial.ShowDirection = source.Receive.ShowDirection;
             Serial.ShowPayload = source.Receive.ShowPayload;
+            Serial.SplitByNewLine = source.Receive.SplitByNewLine;
             Serial.AutoScroll = source.Receive.IsAutoScroll;
             Serial.MaxDisplayLines = source.Receive.MaxDisplayLines >= 50 ? source.Receive.MaxDisplayLines : 500;
             Serial.AutoSaveSerialLogOnOpen = source.Receive.AutoSaveSerialLogOnOpen;
@@ -207,6 +210,7 @@ namespace LinkStudio.UI.State
                     ShowTimestamp = Serial.ShowTimestamp,
                     ShowDirection = Serial.ShowDirection,
                     ShowPayload = Serial.ShowPayload,
+                    SplitByNewLine = Serial.SplitByNewLine,
                     IsAutoScroll = Serial.AutoScroll,
                     MaxDisplayLines = Serial.MaxDisplayLines,
                     AutoSaveSerialLogOnOpen = Serial.AutoSaveSerialLogOnOpen,

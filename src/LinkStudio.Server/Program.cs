@@ -1,6 +1,7 @@
 using LinkStudio.Core.Services;
 using LinkStudio.Core.Services.Interfaces;
 using LinkStudio.UI.Services;
+using LinkStudio.UI.State;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,7 +9,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<IFolderPickerService, UnsupportedFolderPickerService>();
+builder.Services.AddSingleton<IFilterWindowService, UnsupportedFilterWindowService>();
 builder.Services.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
+builder.Services.AddSingleton<WorkbenchSettings>();
+builder.Services.AddSingleton<TerminalSessionHub>();
 
 var app = builder.Build();
 
@@ -29,4 +33,16 @@ internal sealed class UnsupportedFolderPickerService : IFolderPickerService
 
     public Task<string?> PickFolderAsync(string title, string? initialDirectory = null) =>
         Task.FromResult<string?>(null);
+}
+
+/// <summary>
+/// 浏览器端暂不提供独立桌面窗口，提供空实现保证共享 UI 正常注入。
+/// </summary>
+internal sealed class UnsupportedFilterWindowService : IFilterWindowService
+{
+    public bool IsSupported => false;
+
+    public void OpenOrActivate() { }
+
+    public void Close() { }
 }

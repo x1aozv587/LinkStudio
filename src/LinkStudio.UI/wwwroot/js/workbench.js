@@ -7,6 +7,17 @@ export function scrollToBottom(element) {
     element.scrollTop = element.scrollHeight;
 }
 
+export function scrollToEntry(container, entryId) {
+    if (!container || !entryId) {
+        return;
+    }
+
+    const target = container.querySelector(`[data-entry-id="${entryId}"]`);
+    if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+}
+
 export function attachAutoScrollWatcher(element, dotNetRef) {
     if (!element || !dotNetRef) {
         return null;
@@ -181,4 +192,61 @@ export function scrollToSection(container, sectionId) {
     if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+}
+
+export function attachVerticalSplitter(handle, panel) {
+    if (!handle || !panel) {
+        return null;
+    }
+
+    let dragging = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    const onPointerDown = (e) => {
+        dragging = true;
+        startY = e.clientY;
+        startHeight = panel.getBoundingClientRect().height;
+        handle.setPointerCapture(e.pointerId);
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+    };
+
+    const onPointerMove = (e) => {
+        if (!dragging) {
+            return;
+        }
+
+        // 向上拖动增加过滤面板高度，向下拖动缩小，限制在合理区间内。
+        const delta = startY - e.clientY;
+        const maxH = Math.max(200, Math.floor(window.innerHeight * 0.58));
+        const nextHeight = Math.min(maxH, Math.max(130, Math.round(startHeight + delta)));
+        panel.style.height = `${nextHeight}px`;
+    };
+
+    const stopDrag = (e) => {
+        if (!dragging) {
+            return;
+        }
+
+        dragging = false;
+        if (handle.hasPointerCapture(e.pointerId)) {
+            handle.releasePointerCapture(e.pointerId);
+        }
+        document.body.style.userSelect = "";
+    };
+
+    handle.addEventListener("pointerdown", onPointerDown);
+    handle.addEventListener("pointermove", onPointerMove);
+    handle.addEventListener("pointerup", stopDrag);
+    handle.addEventListener("pointercancel", stopDrag);
+
+    return {
+        dispose() {
+            handle.removeEventListener("pointerdown", onPointerDown);
+            handle.removeEventListener("pointermove", onPointerMove);
+            handle.removeEventListener("pointerup", stopDrag);
+            handle.removeEventListener("pointercancel", stopDrag);
+        }
+    };
 }

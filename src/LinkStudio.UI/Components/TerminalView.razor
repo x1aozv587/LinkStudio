@@ -31,22 +31,15 @@
             @if (_mode == DeviceMode.Serial)
             {
                 <div class="ls-port-picker">
-                    <select class="ls-select ls-mono"
-                            aria-label="选择串口"
-                            @bind="_selectedPort"
-                            disabled="@(_isConnectedOrBusy || _availablePorts.Length == 0)">
-                        @if (_availablePorts.Length == 0)
-                        {
-                            <option value="">未检测到串口</option>
-                        }
-                        else
-                        {
-                            @foreach (var port in _availablePorts)
-                            {
-                                <option value="@port">@port</option>
-                            }
-                        }
-                    </select>
+                    <LinkSelect TValue="string"
+                                Options="_portOptions"
+                                Value="@_selectedPort"
+                                ValueChanged="v => _selectedPort = v"
+                                Disabled="@(_isConnectedOrBusy || _availablePorts.Length == 0)"
+                                IsMono="true"
+                                CssClass="ls-port-select"
+                                AriaLabel="选择串口"
+                                EmptyText="未检测到串口" />
                     <button type="button"
                             class="ls-icon-btn"
                             title="刷新串口列表"
@@ -62,25 +55,48 @@
 
                 <div class="ls-baud-box">
                     <span class="ls-inline-label">波特率</span>
-                    <input class="ls-input ls-baud-input ls-mono"
-                           type="text"
-                           inputmode="numeric"
-                           list="ls-baud-presets"
-                           aria-label="波特率"
-                           @bind="_baudRateText"
-                           disabled="@(_isConnectedOrBusy)" />
-                    <datalist id="ls-baud-presets">
-                        <option value="9600" />
-                        <option value="19200" />
-                        <option value="38400" />
-                        <option value="57600" />
-                        <option value="115200" />
-                        <option value="230400" />
-                        <option value="460800" />
-                        <option value="921600" />
-                        <option value="1000000" />
-                        <option value="2000000" />
-                    </datalist>
+                    <div class="ls-combobox">
+                        <input class="ls-combobox-input ls-mono"
+                               type="text"
+                               inputmode="numeric"
+                               aria-label="波特率"
+                               @bind="_baudRateText"
+                               @bind:event="oninput"
+                               @onfocus="() => { if (!_isConnectedOrBusy) _isBaudMenuOpen = true; }"
+                               disabled="@(_isConnectedOrBusy)" />
+                        <button type="button"
+                                class="ls-combobox-toggle @(_isBaudMenuOpen ? "is-open" : string.Empty)"
+                                title="选择常用波特率"
+                                aria-label="展开波特率列表"
+                                disabled="@(_isConnectedOrBusy)"
+                                @onclick="() => _isBaudMenuOpen = !_isBaudMenuOpen">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6 9 12 15 18 9" />
+                            </svg>
+                        </button>
+
+                        @if (_isBaudMenuOpen && !_isConnectedOrBusy)
+                        {
+                            <div class="ls-menu-backdrop" @onclick="() => _isBaudMenuOpen = false"></div>
+                            <div class="ls-combobox-menu ls-mono" role="listbox" aria-label="常用波特率">
+                                @foreach (var preset in _baudPresets)
+                                {
+                                    var isSelected = string.Equals(_baudRateText.Trim(), preset, StringComparison.Ordinal);
+                                    <button type="button"
+                                            role="option"
+                                            aria-selected="@isSelected"
+                                            class="ls-combobox-option @(isSelected ? "is-selected" : string.Empty)"
+                                            @onclick="() => SelectBaudRate(preset)">
+                                        <span>@preset</span>
+                                        @if (isSelected)
+                                        {
+                                            <span class="ls-option-check">✓</span>
+                                        }
+                                    </button>
+                                }
+                            </div>
+                        }
+                    </div>
                 </div>
             }
             else
@@ -134,6 +150,14 @@
                     HEX
                 </button>
             </div>
+
+            <button type="button"
+                    class="ls-pill-toggle @(SessionHub.CompiledRules.Count > 0 ? "is-active" : string.Empty)"
+                    title="@(FilterWindowService.IsSupported ? "打开独立搜索与过滤窗口" : "仅桌面端支持独立搜索窗口")"
+                    disabled="@(!FilterWindowService.IsSupported)"
+                    @onclick="FilterWindowService.OpenOrActivate">
+                搜索@(SessionHub.CompiledRules.Count > 0 ? $" ({SessionHub.CompiledRules.Count})" : string.Empty)
+            </button>
 
             <button type="button"
                     class="ls-pill-toggle @(Settings.Serial.AutoScroll ? "is-active" : string.Empty)"
@@ -208,7 +232,8 @@
             {
                 @foreach (var entry in _entries)
                 {
-                    <div class="ls-log-row @GetRowCssClass(entry) @(ReferenceEquals(_copiedEntry, entry) ? "is-copied" : string.Empty)"
+                    <div class="ls-log-row @GetRowCssClass(entry) @(ReferenceEquals(_copiedEntry, entry) ? "is-copied" : string.Empty) @(_jumpTargetEntryId == entry.EntryId ? "is-jump-target" : string.Empty)"
+                         data-entry-id="@entry.EntryId"
                          title="双击复制整条内容"
                          @ondblclick="() => CopyEntryAsync(entry)">
                         @if (Settings.Serial.ShowTimestamp)
@@ -221,7 +246,7 @@
                         }
                         @if (Settings.Serial.ShowPayload)
                         {
-                            <span class="ls-log-body">@FormatEntryText(entry)</span>
+                            <span class="ls-log-body">@RenderHighlightedText(FormatEntryText(entry))</span>
                         }
                     </div>
                 }
@@ -370,50 +395,42 @@
 
                     <div class="ls-drawer-row">
                         <span class="ls-drawer-label">数据位（Data Bits）</span>
-                        <select class="ls-select ls-drawer-control"
-                                value="@Settings.Serial.DataBits"
-                                @onchange="OnDataBitsChanged">
-                            <option value="5">5</option>
-                            <option value="6">6</option>
-                            <option value="7">7</option>
-                            <option value="8">8</option>
-                        </select>
+                        <LinkSelect TValue="int"
+                                    Options="_dataBitsOptions"
+                                    Value="Settings.Serial.DataBits"
+                                    ValueChanged="v => UpdateSetting(() => Settings.Serial.DataBits = v)"
+                                    CssClass="ls-drawer-control"
+                                    AriaLabel="数据位" />
                     </div>
 
                     <div class="ls-drawer-row">
                         <span class="ls-drawer-label">停止位（Stop Bits）</span>
-                        <select class="ls-select ls-drawer-control"
-                                value="@Settings.Serial.StopBits"
-                                @onchange="OnStopBitsChanged">
-                            <option value="@StopBits.One">1</option>
-                            <option value="@StopBits.OnePointFive">1.5</option>
-                            <option value="@StopBits.Two">2</option>
-                        </select>
+                        <LinkSelect TValue="StopBits"
+                                    Options="_stopBitsOptions"
+                                    Value="Settings.Serial.StopBits"
+                                    ValueChanged="v => UpdateSetting(() => Settings.Serial.StopBits = v)"
+                                    CssClass="ls-drawer-control"
+                                    AriaLabel="停止位" />
                     </div>
 
                     <div class="ls-drawer-row">
                         <span class="ls-drawer-label">校验位（Parity）</span>
-                        <select class="ls-select ls-drawer-control"
-                                value="@Settings.Serial.Parity"
-                                @onchange="OnParityChanged">
-                            <option value="@Parity.None">None（无）</option>
-                            <option value="@Parity.Odd">Odd（奇校验）</option>
-                            <option value="@Parity.Even">Even（偶校验）</option>
-                            <option value="@Parity.Mark">Mark</option>
-                            <option value="@Parity.Space">Space</option>
-                        </select>
+                        <LinkSelect TValue="Parity"
+                                    Options="_parityOptions"
+                                    Value="Settings.Serial.Parity"
+                                    ValueChanged="v => UpdateSetting(() => Settings.Serial.Parity = v)"
+                                    CssClass="ls-drawer-control"
+                                    AriaLabel="校验位" />
                     </div>
 
                     <div class="ls-drawer-row">
                         <span class="ls-drawer-label">流控（Handshake）</span>
-                        <select class="ls-select ls-drawer-control"
-                                value="@Settings.Serial.FlowControl"
-                                @onchange="OnFlowControlChanged">
-                            <option value="@Handshake.None">None（无）</option>
-                            <option value="@Handshake.RequestToSend">RTS / CTS</option>
-                            <option value="@Handshake.XOnXOff">XON / XOFF</option>
-                            <option value="@Handshake.RequestToSendXOnXOff">RTS/CTS + XON/XOFF</option>
-                        </select>
+                        <LinkSelect TValue="Handshake"
+                                    Options="_flowControlOptions"
+                                    Value="Settings.Serial.FlowControl"
+                                    ValueChanged="v => UpdateSetting(() => Settings.Serial.FlowControl = v)"
+                                    CssClass="ls-drawer-control"
+                                    AriaLabel="流控" />
                     </div>
                 </div>
 
@@ -452,6 +469,19 @@
                     </div>
 
                     <div class="ls-drawer-row">
+                        <div class="ls-setting-info">
+                            <span class="ls-drawer-label">按 \r\n 自动分行</span>
+                            <span class="ls-setting-desc">将一次收到的多行文本按换行符拆成独立条目，方便过滤与单行复制。</span>
+                        </div>
+                        <label class="ls-switch">
+                            <input type="checkbox"
+                                   checked="@Settings.Serial.SplitByNewLine"
+                                   @onchange="e => UpdateBool(v => Settings.Serial.SplitByNewLine = v, e)" />
+                            <span class="ls-switch-track"></span>
+                        </label>
+                    </div>
+
+                    <div class="ls-drawer-row">
                         <span class="ls-drawer-label">智能自动滚屏</span>
                         <label class="ls-switch">
                             <input type="checkbox"
@@ -463,14 +493,12 @@
 
                     <div class="ls-drawer-row">
                         <span class="ls-drawer-label">界面最大保留条数</span>
-                        <select class="ls-select ls-drawer-control"
-                                value="@Settings.Serial.MaxDisplayLines"
-                                @onchange="OnMaxLinesChanged">
-                            <option value="200">200 条</option>
-                            <option value="500">500 条</option>
-                            <option value="1000">1,000 条</option>
-                            <option value="2000">2,000 条</option>
-                        </select>
+                        <LinkSelect TValue="int"
+                                    Options="_maxLinesOptions"
+                                    Value="Settings.Serial.MaxDisplayLines"
+                                    ValueChanged="v => UpdateSetting(() => Settings.Serial.MaxDisplayLines = v)"
+                                    CssClass="ls-drawer-control"
+                                    AriaLabel="界面最大保留条数" />
                     </div>
                 </div>
 
@@ -527,12 +555,12 @@
 
                     <div class="ls-drawer-row">
                         <span class="ls-drawer-label">日志格式</span>
-                        <select class="ls-select ls-drawer-control"
-                                value="@Settings.Serial.SerialLogFormat"
-                                @onchange="OnSerialLogFormatChanged">
-                            <option value=".log">.log（带时间戳文本）</option>
-                            <option value=".bin">.bin（原始二进制）</option>
-                        </select>
+                        <LinkSelect TValue="string"
+                                    Options="_logFormatOptions"
+                                    Value="Settings.Serial.SerialLogFormat"
+                                    ValueChanged="v => UpdateSetting(() => Settings.Serial.SerialLogFormat = v)"
+                                    CssClass="ls-drawer-control"
+                                    AriaLabel="日志格式" />
                     </div>
                 </div>
             </div>
@@ -547,13 +575,6 @@
         VirtualMcu
     }
 
-    private sealed record TerminalEntry(
-        DateTimeOffset Timestamp,
-        string Direction,
-        uint? SeqNo,
-        byte[] Payload,
-        string? SystemMessage = null);
-
     [Parameter, EditorRequired]
     public WorkbenchSettings Settings { get; set; } = default!;
 
@@ -563,7 +584,13 @@
     [Inject]
     private IFolderPickerService FolderPicker { get; set; } = default!;
 
-    private readonly List<TerminalEntry> _entries = [];
+    [Inject]
+    private IFilterWindowService FilterWindowService { get; set; } = default!;
+
+    [Inject]
+    private TerminalSessionHub SessionHub { get; set; } = default!;
+
+    private IReadOnlyList<TerminalLogEntry> _entries = [];
     private ElementReference _outputRef;
     private ElementReference _sendTextareaRef;
     private IJSObjectReference? _jsModule;
@@ -577,9 +604,60 @@
     private Task? _transition;
 
     private DeviceMode _mode = DeviceMode.Serial;
+    private static readonly string[] _baudPresets =
+    [
+        "9600", "19200", "38400", "57600", "115200",
+        "230400", "460800", "921600", "1000000", "2000000"
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<int>.SelectOption> _dataBitsOptions =
+    [
+        new(5, "5"), new(6, "6"), new(7, "7"), new(8, "8")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<StopBits>.SelectOption> _stopBitsOptions =
+    [
+        new(StopBits.One, "1"),
+        new(StopBits.OnePointFive, "1.5"),
+        new(StopBits.Two, "2")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<Parity>.SelectOption> _parityOptions =
+    [
+        new(Parity.None, "None（无）"),
+        new(Parity.Odd, "Odd（奇校验）"),
+        new(Parity.Even, "Even（偶校验）"),
+        new(Parity.Mark, "Mark"),
+        new(Parity.Space, "Space")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<Handshake>.SelectOption> _flowControlOptions =
+    [
+        new(Handshake.None, "None（无）"),
+        new(Handshake.RequestToSend, "RTS / CTS"),
+        new(Handshake.XOnXOff, "XON / XOFF"),
+        new(Handshake.RequestToSendXOnXOff, "RTS/CTS + XON/XOFF")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<int>.SelectOption> _maxLinesOptions =
+    [
+        new(200, "200 条"),
+        new(500, "500 条"),
+        new(1000, "1,000 条"),
+        new(2000, "2,000 条")
+    ];
+
+    private static readonly IReadOnlyList<LinkSelect<string>.SelectOption> _logFormatOptions =
+    [
+        new(".log", ".log（带时间戳文本）"),
+        new(".bin", ".bin（原始二进制）")
+    ];
+
     private string[] _availablePorts = [];
+    private IReadOnlyList<LinkSelect<string>.SelectOption> _portOptions = [];
     private string _selectedPort = string.Empty;
     private string _baudRateText = "1000000";
+    private bool _isBaudMenuOpen;
 
     private int _virtualIntervalMs = 1000;
     private bool _isVirtualAutoSending;
@@ -590,7 +668,8 @@
     private string _draft = string.Empty;
     private string? _sendError;
     private string? _copyToastText;
-    private TerminalEntry? _copiedEntry;
+    private TerminalLogEntry? _copiedEntry;
+    private long? _jumpTargetEntryId;
     private int _copyToastVersion;
 
     private bool _isSerialSettingsOpen;
@@ -615,7 +694,10 @@
     protected override void OnInitialized()
     {
         _baudRateText = Settings.Serial.DefaultBaudRate.ToString(CultureInfo.InvariantCulture);
+        _entries = SessionHub.GetEntriesSnapshot();
         Settings.Changed += HandleSettingsChanged;
+        SessionHub.RulesChanged += HandleFilterRulesChanged;
+        SessionHub.JumpToEntryRequested += HandleJumpToEntryRequested;
         RefreshPorts();
     }
 
@@ -703,31 +785,53 @@
         });
     }
 
-    private async Task CopyEntryAsync(TerminalEntry entry)
+    private void HandleFilterRulesChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            if (!_disposed)
+            {
+                StateHasChanged();
+            }
+        });
+    }
+
+    private void HandleJumpToEntryRequested(long entryId)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            // 主动跳转到历史命中项时暂停自动贴底，避免下一包数据立刻把视角拉回底部。
+            _jumpTargetEntryId = entryId;
+            _userScrolledUp = true;
+            StateHasChanged();
+
+            if (_jsModule is not null)
+            {
+                try
+                {
+                    await _jsModule.InvokeVoidAsync("scrollToEntry", _outputRef, entryId);
+                }
+                catch (JSDisconnectedException)
+                {
+                    // 页面断开时忽略脚本调用异常。
+                }
+            }
+        });
+    }
+
+    private async Task CopyEntryAsync(TerminalLogEntry entry)
     {
         if (_jsModule is null)
         {
             return;
         }
 
-        // 按当前勾选的可见列拼出整行文本，所见即所复制。
-        var parts = new List<string>(3);
-        if (Settings.Serial.ShowTimestamp)
-        {
-            parts.Add(entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff"));
-        }
-
-        if (Settings.Serial.ShowDirection)
-        {
-            parts.Add(entry.Direction);
-        }
-
-        if (Settings.Serial.ShowPayload)
-        {
-            parts.Add(FormatEntryText(entry));
-        }
-
-        var line = string.Join(" ", parts);
+        var line = TerminalSessionHub.BuildCopyLine(entry, Settings.Serial);
         if (string.IsNullOrEmpty(line))
         {
             return;
@@ -747,26 +851,40 @@
         }
     }
 
-    private async Task ShowCopyToastAsync(TerminalEntry entry, string text)
+    private async Task ShowCopyToastAsync(TerminalLogEntry? entry, string text)
     {
         var version = ++_copyToastVersion;
         _copiedEntry = entry;
         _copyToastText = text;
         StateHasChanged();
 
-        await Task.Delay(320);
-        if (!_disposed && _copyToastVersion == version)
+        if (entry is not null)
         {
-            _copiedEntry = null;
-            StateHasChanged();
+            await Task.Delay(320);
+            if (!_disposed && _copyToastVersion == version)
+            {
+                _copiedEntry = null;
+                StateHasChanged();
+            }
+
+            await Task.Delay(980);
+        }
+        else
+        {
+            await Task.Delay(1300);
         }
 
-        await Task.Delay(980);
         if (!_disposed && _copyToastVersion == version)
         {
             _copyToastText = null;
             StateHasChanged();
         }
+    }
+
+    private void SelectBaudRate(string baudRate)
+    {
+        _baudRateText = baudRate;
+        _isBaudMenuOpen = false;
     }
 
     private void SelectMode(DeviceMode mode)
@@ -791,6 +909,7 @@
             _availablePorts = SerialPortDevice.GetAvailablePorts()
                 .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+            _portOptions = _availablePorts.Select(p => new LinkSelect<string>.SelectOption(p, p)).ToArray();
 
             if (_availablePorts.Length == 0)
             {
@@ -805,6 +924,7 @@
         {
             Serilog.Log.Error(error, "枚举本机串口列表失败");
             _availablePorts = [];
+            _portOptions = [];
             _selectedPort = string.Empty;
             _connectionError = "枚举串口列表失败，请检查系统串口驱动。";
         }
@@ -1142,8 +1262,27 @@
                 _rxBytes += payloadCopy.Length;
             }
 
-            _entries.Add(new TerminalEntry(timestamp, dir, packet.SeqNo, payloadCopy));
-            TrimEntriesToLimit();
+            if (Settings.Serial.SplitByNewLine
+                && packet.Direction == PacketDirection.Rx
+                && Settings.Serial.DisplayMode == TerminalDisplayMode.Utf8
+                && payloadCopy.Length > 0)
+            {
+                var lines = DataHelper.SplitByteLines(payloadCopy);
+                foreach (var lineBytes in lines)
+                {
+                    SessionHub.AddEntry(
+                        new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, lineBytes),
+                        Settings.Serial.MaxDisplayLines);
+                }
+            }
+            else
+            {
+                SessionHub.AddEntry(
+                    new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, payloadCopy),
+                    Settings.Serial.MaxDisplayLines);
+            }
+
+            _entries = SessionHub.GetEntriesSnapshot();
 
             if (Settings.Serial.AutoScroll && !_userScrolledUp)
             {
@@ -1156,8 +1295,10 @@
 
     private void AppendSystemEntry(string message)
     {
-        _entries.Add(new TerminalEntry(DateTimeOffset.Now, "SYS", null, [], message));
-        TrimEntriesToLimit();
+        SessionHub.AddEntry(
+            new TerminalLogEntry(SessionHub.NextEntryId(), DateTimeOffset.Now, "SYS", null, [], message),
+            Settings.Serial.MaxDisplayLines);
+        _entries = SessionHub.GetEntriesSnapshot();
         if (Settings.Serial.AutoScroll && !_userScrolledUp)
         {
             _pendingScrollToBottom = true;
@@ -1166,16 +1307,14 @@
 
     private void TrimEntriesToLimit()
     {
-        var limit = Math.Max(Settings.Serial.MaxDisplayLines, 50);
-        if (_entries.Count > limit)
-        {
-            _entries.RemoveRange(0, _entries.Count - limit);
-        }
+        SessionHub.TrimEntries(Settings.Serial.MaxDisplayLines);
+        _entries = SessionHub.GetEntriesSnapshot();
     }
 
     private void ClearEntries()
     {
-        _entries.Clear();
+        SessionHub.ClearEntries();
+        _entries = [];
         _rxBytes = 0;
         _txBytes = 0;
         _userScrolledUp = false;
@@ -1269,59 +1408,10 @@
         }
     }
 
-    private void OnDataBitsChanged(ChangeEventArgs e)
+    private void UpdateSetting(Action mutation)
     {
-        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var bits))
-        {
-            Settings.Serial.DataBits = bits;
-            Settings.NotifyChanged();
-        }
-    }
-
-    private void OnStopBitsChanged(ChangeEventArgs e)
-    {
-        if (Enum.TryParse<StopBits>(e.Value?.ToString(), out var stopBits))
-        {
-            Settings.Serial.StopBits = stopBits;
-            Settings.NotifyChanged();
-        }
-    }
-
-    private void OnParityChanged(ChangeEventArgs e)
-    {
-        if (Enum.TryParse<Parity>(e.Value?.ToString(), out var parity))
-        {
-            Settings.Serial.Parity = parity;
-            Settings.NotifyChanged();
-        }
-    }
-
-    private void OnFlowControlChanged(ChangeEventArgs e)
-    {
-        if (Enum.TryParse<Handshake>(e.Value?.ToString(), out var handshake))
-        {
-            Settings.Serial.FlowControl = handshake;
-            Settings.NotifyChanged();
-        }
-    }
-
-    private void OnMaxLinesChanged(ChangeEventArgs e)
-    {
-        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var maxLines))
-        {
-            Settings.Serial.MaxDisplayLines = maxLines;
-            Settings.NotifyChanged();
-        }
-    }
-
-    private void OnSerialLogFormatChanged(ChangeEventArgs e)
-    {
-        var format = e.Value?.ToString();
-        if (format is ".log" or ".bin")
-        {
-            Settings.Serial.SerialLogFormat = format;
-            Settings.NotifyChanged();
-        }
+        mutation();
+        Settings.NotifyChanged();
     }
 
     private async Task OnAutoSaveSerialLogChangedAsync(ChangeEventArgs e)
@@ -1383,31 +1473,44 @@
         }
     }
 
-    private string FormatEntryText(TerminalEntry entry)
+    private RenderFragment RenderHighlightedText(string text) => builder =>
     {
-        if (entry.SystemMessage is not null)
+        var compiled = SessionHub.CompiledRules;
+        if (compiled.Count == 0 || string.IsNullOrEmpty(text))
         {
-            return entry.SystemMessage;
+            builder.AddContent(0, text);
+            return;
         }
 
-        if (entry.Payload.Length == 0)
+        var segments = TerminalFilterEngine.BuildSegments(text, compiled);
+        var seq = 0;
+        foreach (var segment in segments)
         {
-            return "(空)";
+            if (segment.ColorKey is null)
+            {
+                builder.AddContent(seq++, segment.Text);
+            }
+            else
+            {
+                builder.OpenElement(seq++, "mark");
+                builder.AddAttribute(seq++, "class", $"ls-hl ls-hl-{segment.ColorKey}");
+                builder.AddContent(seq++, segment.Text);
+                builder.CloseElement();
+            }
         }
+    };
 
-        return Settings.Serial.DisplayMode == TerminalDisplayMode.Hex
-            ? BitConverter.ToString(entry.Payload).Replace("-", " ", StringComparison.Ordinal)
-            : Encoding.UTF8.GetString(entry.Payload);
-    }
+    private string FormatEntryText(TerminalLogEntry entry) =>
+        TerminalSessionHub.FormatEntryText(entry, Settings.Serial.DisplayMode);
 
-    private static string GetRowCssClass(TerminalEntry entry) => entry.Direction switch
+    private static string GetRowCssClass(TerminalLogEntry entry) => entry.Direction switch
     {
         "TX" => "is-tx",
         "SYS" => "is-sys",
         _ => "is-rx"
     };
 
-    private static string GetDirCssClass(TerminalEntry entry) => entry.Direction switch
+    private static string GetDirCssClass(TerminalLogEntry entry) => entry.Direction switch
     {
         "TX" => "ls-dir-tx",
         "SYS" => "ls-dir-sys",
@@ -1418,6 +1521,8 @@
     {
         _disposed = true;
         Settings.Changed -= HandleSettingsChanged;
+        SessionHub.RulesChanged -= HandleFilterRulesChanged;
+        SessionHub.JumpToEntryRequested -= HandleJumpToEntryRequested;
 
         try
         {
