@@ -7,6 +7,7 @@
 @using LinkStudio.Core.Devices.Virtual
 @using LinkStudio.Core.Helper
 @using LinkStudio.Core.Models
+@using LinkStudio.Core.Protocols
 @using LinkStudio.Core.Services
 @using LinkStudio.Core.Services.Interfaces
 @implements IAsyncDisposable
@@ -619,6 +620,7 @@
     private RawDataBus? _bus;
     private ICommunicationDevice? _device;
     private SerialLogRecorder? _logRecorder;
+    private ProtocolPipeline? _protocolPipeline;
     private Task? _transition;
 
     private DeviceMode _mode = DeviceMode.Serial;
@@ -1102,6 +1104,18 @@
                     () => Settings.CreateSerialLogOptions());
             }
 
+            // 挂载协议解析管线（独立订阅者）：自动执行跨包分帧与 NMEA / JSON 解析。
+            _protocolPipeline = new ProtocolPipeline(
+                bus,
+                device.Id,
+                new LineFramer(),
+                [new NmeaProtocolParser(), new JsonProtocolParser()],
+                parsed =>
+                {
+                    SessionHub.AddParsedFrame(parsed);
+                    return ValueTask.CompletedTask;
+                });
+
             bus.Subscribe(
                 new(device.Id, Capacity: Math.Max(Settings.Serial.MaxDisplayLines, 256), OverflowPolicy: RawDataOverflowPolicy.DropOldest),
                 (packet, _) => OnPacketReceivedAsync(bus, packet));
@@ -1143,10 +1157,12 @@
 
         var device = _device;
         var recorder = _logRecorder;
+        var pipeline = _protocolPipeline;
         var bus = _bus;
 
         _device = null;
         _logRecorder = null;
+        _protocolPipeline = null;
         _bus = null;
         _isVirtualAutoSending = false;
 
@@ -1166,7 +1182,7 @@
         {
             try
             {
-                // 先释放总线以排空总线上尚未分发给订阅者的尾包，确保日志记录器全部写完。
+                // 先释放总线以排空总线上尚未分发给订阅者的尾包，确保日志记录器与协议管线全部处理完。
                 if (bus is not null)
                 {
                     await bus.DisposeAsync();
@@ -1174,6 +1190,11 @@
             }
             finally
             {
+                if (pipeline is not null)
+                {
+                    await pipeline.DisposeAsync();
+                }
+
                 if (recorder is not null)
                 {
                     await recorder.DisposeAsync();

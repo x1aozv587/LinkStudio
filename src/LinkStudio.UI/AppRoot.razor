@@ -19,6 +19,17 @@
                 </svg>
                 <span class="ls-rail-label">终端</span>
             </button>
+
+            <button type="button"
+                    class="ls-rail-btn @(_activePage == AppPage.Protocol ? "is-active" : string.Empty)"
+                    title="协议监视（NMEA / JSON 结构化解析）"
+                    aria-label="协议监视"
+                    @onclick="() => _activePage = AppPage.Protocol">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                </svg>
+                <span class="ls-rail-label">协议</span>
+            </button>
         </div>
 
         <div class="ls-rail-bottom">
@@ -42,6 +53,13 @@
             <TerminalView Settings="_settings" />
         </div>
 
+        @if (_activePage == AppPage.Protocol)
+        {
+            <div class="ls-pane">
+                <ProtocolView />
+            </div>
+        }
+
         @if (_activePage == AppPage.Settings)
         {
             <div class="ls-pane">
@@ -55,6 +73,7 @@
     private enum AppPage
     {
         Terminal,
+        Protocol,
         Settings
     }
 
