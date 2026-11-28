@@ -105,12 +105,18 @@
             else
             {
                 <div class="ls-virtual-controls">
-                    <span class="ls-badge-muted ls-mono">virtual-mcu-1</span>
+                    <LinkSelect TValue="VirtualMcuSimulationMode"
+                                Options="_virtualSimModeOptions"
+                                Value="_virtualSimMode"
+                                ValueChanged="OnVirtualSimModeChangedAsync"
+                                Disabled="@_isChanging"
+                                CssClass="ls-sim-select"
+                                AriaLabel="虚拟 MCU 数据模拟模式" />
                     <span class="ls-inline-label">周期</span>
                     <input class="ls-input ls-interval-input ls-mono"
                            type="number"
                            min="10"
-                           step="100"
+                           step="50"
                            aria-label="虚拟设备自动发送周期（毫秒）"
                            @bind="_virtualIntervalMs"
                            disabled="@(!CanControlVirtualAuto)" />
@@ -673,13 +679,21 @@
         new(".bin", ".bin（原始二进制）")
     ];
 
+    private static readonly IReadOnlyList<LinkSelect<VirtualMcuSimulationMode>.SelectOption> _virtualSimModeOptions =
+    [
+        new(VirtualMcuSimulationMode.SimulatedImuJson, "模拟 IMU (JSON)"),
+        new(VirtualMcuSimulationMode.SimulatedGnssNmea, "模拟 GNSS (NMEA)"),
+        new(VirtualMcuSimulationMode.BasicTick, "基础心跳 (Tick)")
+    ];
+
     private string[] _availablePorts = [];
     private IReadOnlyList<LinkSelect<string>.SelectOption> _portOptions = [];
     private string _selectedPort = string.Empty;
     private string _baudRateText = "1000000";
     private bool _isBaudMenuOpen;
 
-    private int _virtualIntervalMs = 1000;
+    private VirtualMcuSimulationMode _virtualSimMode = VirtualMcuSimulationMode.SimulatedImuJson;
+    private int _virtualIntervalMs = 250;
     private bool _isVirtualAutoSending;
     private bool _isTogglingVirtualAuto;
 
@@ -768,6 +782,12 @@
         if (_userScrolledUp != scrolledUp)
         {
             _userScrolledUp = scrolledUp;
+            if (!scrolledUp)
+            {
+                // 用户重新滚回底部时，恢复常规行数上限裁剪，释放临时保留的历史行。
+                TrimEntriesToLimit();
+            }
+
             StateHasChanged();
         }
     }
@@ -1085,7 +1105,9 @@
         }
         else
         {
-            device = new VirtualMcuDevice(bus);
+            var virtualDevice = new VirtualMcuDevice(bus);
+            await virtualDevice.SetSimulationModeAsync(_virtualSimMode);
+            device = virtualDevice;
         }
 
         _bus = bus;
@@ -1199,6 +1221,23 @@
                 {
                     await recorder.DisposeAsync();
                 }
+            }
+        }
+    }
+
+    private async Task OnVirtualSimModeChangedAsync(VirtualMcuSimulationMode mode)
+    {
+        _virtualSimMode = mode;
+        if (_device is VirtualMcuDevice virtualDevice && !_disposed)
+        {
+            try
+            {
+                await virtualDevice.SetSimulationModeAsync(mode);
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Error(error, "切换虚拟 MCU 模拟模式失败");
+                _connectionError = error.Message;
             }
         }
     }
@@ -1355,14 +1394,16 @@
                 {
                     SessionHub.AddEntry(
                         new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, lineBytes),
-                        Settings.Serial.MaxDisplayLines);
+                        Settings.Serial.MaxDisplayLines,
+                        preserveTop: _userScrolledUp);
                 }
             }
             else
             {
                 SessionHub.AddEntry(
                     new TerminalLogEntry(SessionHub.NextEntryId(), timestamp, dir, packet.SeqNo, payloadCopy),
-                    Settings.Serial.MaxDisplayLines);
+                    Settings.Serial.MaxDisplayLines,
+                    preserveTop: _userScrolledUp);
             }
 
             _entries = SessionHub.GetEntriesSnapshot();
@@ -1427,11 +1468,12 @@
     private async Task JumpToBottomAsync()
     {
         _userScrolledUp = false;
+        TrimEntriesToLimit();
         if (_jsModule is not null)
         {
             try
             {
-                await _jsModule.InvokeVoidAsync("scrollToBottom", _outputRef);
+                await _jsModule.InvokeVoidAsync("scrollToBottom", _outputRef, true);
             }
             catch (JSDisconnectedException)
             {

@@ -1,0 +1,780 @@
+@using System.Globalization
+@using System.Text
+@implements IAsyncDisposable
+
+<section class="ls-widget-card ls-wave-widget" aria-label="实时波形图">
+    <header class="ls-wave-head">
+        <!-- 手动输入字段名 + 实时联想下拉 -->
+        <div class="ls-field-adder">
+            <div class="ls-field-input-wrap">
+                <input class="ls-input ls-field-add-input ls-mono"
+                       type="text"
+                       placeholder="输入字段名添加，如 imu.ax / temp / gga.altitude"
+                       value="@_inputKey"
+                       @oninput="OnInputChanged"
+                       @onfocus="() => _isSuggestOpen = true"
+                       @onkeydown="OnInputKeyDown" />
+
+                @if (_isSuggestOpen && Suggestions.Count > 0)
+                {
+                    <div class="ls-menu-backdrop" @onclick="() => _isSuggestOpen = false"></div>
+                    <div class="ls-field-suggest-menu ls-mono" role="listbox" aria-label="可用数值字段建议">
+                        @foreach (var item in Suggestions)
+                        {
+                            var keyToAdd = item.Key;
+                            <button type="button"
+                                    class="ls-combobox-option"
+                                    @onclick="() => SelectSuggestionAsync(keyToAdd)">
+                                <span>@item.Key</span>
+                                <span class="ls-suggest-val">@FormatAxisValue(item.Latest)@item.Unit</span>
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+
+            <button type="button"
+                    class="ls-btn-subtle is-accent"
+                    disabled="@string.IsNullOrWhiteSpace(_inputKey)"
+                    @onclick="AddCurrentInputAsync">
+                + 添加
+            </button>
+        </div>
+
+        <!-- 已手动添加的通道胶囊（点击开关曲线，点 × 移除） -->
+        @if (PinnedKeys.Count > 0)
+        {
+            <div class="ls-wave-channels ls-mono" role="group" aria-label="已监控通道">
+                @for (var i = 0; i < PinnedKeys.Count; i++)
+                {
+                    var key = PinnedKeys[i];
+                    var isVisible = !HiddenKeys.Contains(key);
+                    var color = isVisible ? Palette[i % Palette.Length] : "var(--ls-border-strong)";
+                    var series = FindSeries(key);
+                    <div class="ls-channel-chip @(isVisible ? "is-active" : string.Empty)">
+                        <button type="button"
+                                class="ls-channel-toggle"
+                                title="@(isVisible ? "点击暂时隐藏该曲线" : "点击显示该曲线")"
+                                @onclick="() => OnToggleVisibility.InvokeAsync(key)">
+                            <span class="ls-channel-dot" style="background: @color;"></span>
+                            <span class="ls-channel-name">@key</span>
+                            @if (series is not null)
+                            {
+                                <span class="ls-channel-val">@FormatAxisValue(series.Latest)@series.Unit</span>
+                            }
+                            else
+                            {
+                                <span class="ls-channel-pending">等待</span>
+                            }
+                        </button>
+                        <button type="button"
+                                class="ls-channel-remove"
+                                title="移除该监控字段"
+                                aria-label="移除 @key"
+                                @onclick="() => OnRemoveKey.InvokeAsync(key)">
+                            ×
+                        </button>
+                    </div>
+                }
+            </div>
+        }
+    </header>
+
+    <div class="ls-wave-stage">
+        @if (PinnedKeys.Count == 0)
+        {
+            <div class="ls-wave-empty">
+                <div class="ls-empty-title">手动添加你要监控的字段</div>
+                <p class="ls-empty-hint">
+                    在上方输入框手输任意字段名（如 <code>imu.ax</code>、<code>temp</code>、<code>gga.altitude</code>）按回车添加；也可直接点击下方已识别字段快速加入。
+                </p>
+
+                @if (QuickSuggestions.Count > 0)
+                {
+                    <div class="ls-quick-add-row ls-mono">
+                        @foreach (var item in QuickSuggestions)
+                        {
+                            var quickKey = item.Key;
+                            <button type="button"
+                                    class="ls-quick-add-btn"
+                                    @onclick="() => OnAddKey.InvokeAsync(quickKey)">
+                                + @item.Key
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        }
+        else if (VisibleSeries.Count == 0 || !VisibleSeries.Any(s => s.Samples.Count >= 2))
+        {
+            <div class="ls-wave-empty">
+                <div class="ls-empty-title">等待已选字段的数据…</div>
+                <p class="ls-empty-hint">
+                    已订阅 @PinnedKeys.Count 个字段，设备发送包含对应字段的帧后将自动开始绘制曲线。
+                </p>
+            </div>
+        }
+        else
+        {
+            var slicedList = BuildVisibleSlices();
+            var bounds = ComputeSliceBounds(slicedList);
+            var fullBounds = ComputeYBounds(VisibleSeries);
+            var hover = ComputeHoverState(slicedList, bounds);
+
+            <div class="ls-wave-main-wrap">
+                <svg class="ls-wave-svg"
+                     @ref="_svgRef"
+                     viewBox="0 0 880 264"
+                     preserveAspectRatio="xMidYMid meet"
+                     role="img"
+                     aria-label="多通道实时曲线">
+                    <!-- 水平网格线与 Y 轴刻度 -->
+                    @for (var i = 0; i <= 4; i++)
+                    {
+                        var y = PlotTop + i * (PlotHeight / 4.0);
+                        var tickVal = bounds.Max - i * ((bounds.Max - bounds.Min) / 4.0);
+                        <g>
+                            <line x1="@PlotLeft" y1="@F(y)" x2="@PlotRight" y2="@F(y)" class="ls-wave-grid" />
+                            <text x="@F(PlotLeft - 10)" y="@F(y + 4)" text-anchor="end" class="ls-wave-axis-label ls-mono">
+                                @FormatAxisValue(tickVal)
+                            </text>
+                        </g>
+                    }
+
+                    <!-- 0 基准线 -->
+                    @if (bounds.Min < 0 && bounds.Max > 0)
+                    {
+                        var zeroY = MapY(0, bounds.Min, bounds.Max);
+                        <line x1="@PlotLeft" y1="@F(zeroY)" x2="@PlotRight" y2="@F(zeroY)" class="ls-wave-zero-line" />
+                    }
+
+                    <!-- 多通道折线（仅绘制当前滑动窗口切片，自动放大 Y 轴） -->
+                    @foreach (var slice in slicedList)
+                    {
+                        if (slice.Samples.Count < 2)
+                        {
+                            continue;
+                        }
+
+                        var pts = BuildPolylinePoints(slice.Samples, bounds.Min, bounds.Max, PlotLeft, PlotWidth, PlotBottom, PlotHeight, out var lastX, out var lastY);
+                        <g>
+                            <polyline fill="none"
+                                      stroke="@slice.Color"
+                                      stroke-width="2"
+                                      stroke-linecap="round"
+                                      stroke-linejoin="round"
+                                      points="@pts" />
+                            <circle cx="@F(lastX)" cy="@F(lastY)" r="3.5" fill="@slice.Color" />
+                        </g>
+                    }
+
+                    <!-- 精准十字准心：竖线吸附到真实采样 X，横线吸附到离鼠标最近曲线的真实 Y -->
+                    @if (hover is not null)
+                    {
+                        <line x1="@F(hover.SnapX)" y1="@PlotTop" x2="@F(hover.SnapX)" y2="@PlotBottom" class="ls-wave-crosshair" />
+                        <line x1="@PlotLeft" y1="@F(hover.FocusY)" x2="@PlotRight" y2="@F(hover.FocusY)" class="ls-wave-crosshair" />
+
+                        @foreach (var item in hover.Items)
+                        {
+                            var isFocus = ReferenceEquals(item, hover.FocusItem);
+                            <g>
+                                <circle cx="@F(item.X)" cy="@F(item.Y)" r="@(isFocus ? "7.5" : "5.5")" fill="@item.Color" opacity="@(isFocus ? "0.28" : "0.18")" />
+                                <circle cx="@F(item.X)" cy="@F(item.Y)" r="@(isFocus ? "4.2" : "3.2")" fill="@item.Color" stroke="var(--ls-bg-surface)" stroke-width="1.5" />
+                            </g>
+                        }
+
+                        <!-- 紧跟准心的 SVG 浮窗：自动左右防越界翻边，视线无需离开曲线 -->
+                        var tipWidth = 178.0;
+                        var tipHeight = 24.0 + hover.Items.Count * 17.0;
+                        var tipX = hover.SnapX + 14.0 + tipWidth > PlotRight
+                            ? hover.SnapX - 14.0 - tipWidth
+                            : hover.SnapX + 14.0;
+                        var tipY = Math.Clamp(hover.FocusY - tipHeight / 2.0, PlotTop + 4.0, PlotBottom - tipHeight - 4.0);
+                        <g class="ls-wave-svg-tip" transform="translate(@F(tipX), @F(tipY))">
+                            <rect x="0" y="0" width="@F(tipWidth)" height="@F(tipHeight)" rx="7" class="ls-wave-tip-bg" />
+                            <text x="10" y="15" class="ls-wave-tip-time ls-mono">
+                                @DateTimeOffset.FromUnixTimeMilliseconds(hover.FocusItem.TimestampMs).ToLocalTime().ToString("HH:mm:ss.fff")
+                            </text>
+                            @for (var tIdx = 0; tIdx < hover.Items.Count; tIdx++)
+                            {
+                                var item = hover.Items[tIdx];
+                                var isFocus = ReferenceEquals(item, hover.FocusItem);
+                                var rowY = 33.0 + tIdx * 17.0;
+                                <g>
+                                    <circle cx="13" cy="@F(rowY - 3.5)" r="3.2" fill="@item.Color" />
+                                    <text x="22" y="@F(rowY)" class="ls-wave-tip-key @(isFocus ? "is-focus" : string.Empty) ls-mono">
+                                        @TruncateKey(item.Key, 12)
+                                    </text>
+                                    <text x="@F(tipWidth - 10)" y="@F(rowY)" text-anchor="end" class="ls-wave-tip-val @(isFocus ? "is-focus" : string.Empty) ls-mono">
+                                        @($"{FormatPreciseValue(item.Value)}{item.Unit}")
+                                    </text>
+                                </g>
+                            }
+                        </g>
+                    }
+                </svg>
+            </div>
+
+            <!-- 底部全量缩略图预览窗口 + 可左右平移/缩放的拖拽滑块 -->
+            <div class="ls-wave-nav-section">
+                <div class="ls-wave-minimap"
+                     @ref="_minimapRef"
+                     data-start="@ViewStart.ToString("F4", CultureInfo.InvariantCulture)"
+                     data-end="@ViewEnd.ToString("F4", CultureInfo.InvariantCulture)"
+                     title="拖动高亮窗口平移历史波形，拖动左右把手缩放时间范围">
+                    <svg class="ls-wave-minimap-svg" viewBox="0 0 880 42" preserveAspectRatio="none" aria-hidden="true">
+                        @foreach (var slice in slicedList)
+                        {
+                            if (slice.FullSamples.Count < 2)
+                            {
+                                continue;
+                            }
+
+                            var miniPts = BuildPolylinePoints(slice.FullSamples, fullBounds.Min, fullBounds.Max, 4, 872, 38, 34, out _, out _);
+                            <polyline fill="none"
+                                      stroke="@slice.Color"
+                                      stroke-width="1.3"
+                                      opacity="0.7"
+                                      points="@miniPts" />
+                        }
+                    </svg>
+
+                    <!-- 左右未选中遮罩 -->
+                    <div class="ls-wave-curtain ls-wave-curtain-left"
+                         style="width: @Pct(ViewStart);"></div>
+                    <div class="ls-wave-curtain ls-wave-curtain-right"
+                         style="width: @Pct(1.0 - ViewEnd);"></div>
+
+                    <!-- 可拖动视窗与左右缩放把手 -->
+                    <div class="ls-wave-range-window"
+                         data-drag-mode="move"
+                         style="left: @Pct(ViewStart); width: @Pct(ViewEnd - ViewStart);">
+                        <div class="ls-wave-range-handle ls-wave-range-handle-l" data-drag-mode="left"></div>
+                        <div class="ls-wave-range-handle ls-wave-range-handle-r" data-drag-mode="right"></div>
+                    </div>
+                </div>
+
+                <div class="ls-wave-nav-meta ls-mono">
+                    @{
+                        var primary = slicedList.FirstOrDefault();
+                    }
+                    <span>
+                        @if (primary is not null)
+                        {
+                            @($"当前视窗：第 {primary.StartIndex + 1} – {primary.EndIndex + 1} / 共 {primary.FullSamples.Count} 点")
+                        }
+                    </span>
+
+                    <div class="ls-wave-nav-actions">
+                        @if (IsZoomedOrPanned)
+                        {
+                            <button type="button" class="ls-link-btn" @onclick="ResetRangeAsync">重置全部</button>
+                        }
+                        else
+                        {
+                            <span class="ls-nav-tip">拖动下方预览条可缩放或回看历史</span>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+</section>
+
+@code {
+    private const double PlotLeft = 58;
+    private const double PlotRight = 864;
+    private const double PlotTop = 14;
+    private const double PlotBottom = 248;
+    private const double PlotWidth = PlotRight - PlotLeft;
+    private const double PlotHeight = PlotBottom - PlotTop;
+
+    public static readonly string[] Palette =
+    [
+        "#3B82F6", // 蓝
+        "#10B981", // 翠绿
+        "#F59E0B", // 琥珀
+        "#8B5CF6", // 紫
+        "#EC4899", // 粉
+        "#06B6D4"  // 青
+    ];
+
+    [Inject]
+    private IJSRuntime JS { get; set; } = default!;
+
+    [Parameter]
+    public IReadOnlyList<NumericSeriesSnapshot> AllSeries { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlyList<string> PinnedKeys { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlySet<string> HiddenKeys { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+
+    [Parameter]
+    public double ViewStart { get; set; } = 0.0;
+
+    [Parameter]
+    public double ViewEnd { get; set; } = 1.0;
+
+    [Parameter]
+    public EventCallback<(double Start, double End)> OnViewRangeChanged { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnAddKey { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnRemoveKey { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnToggleVisibility { get; set; }
+
+    private string _inputKey = string.Empty;
+    private bool _isSuggestOpen;
+    private double? _hoverSvgX;
+    private double? _hoverSvgY;
+
+    private ElementReference _svgRef;
+    private ElementReference _minimapRef;
+    private IJSObjectReference? _jsModule;
+    private IJSObjectReference? _navHandle;
+    private IJSObjectReference? _hoverHandle;
+    private DotNetObjectReference<WaveformChartWidget>? _dotNetRef;
+    private bool _handlersAttached;
+    private bool _disposed;
+
+    private bool IsZoomedOrPanned => ViewStart > 0.005 || ViewEnd < 0.995;
+
+    private sealed record SeriesSlice(
+        string Key,
+        string Color,
+        string? Unit,
+        IReadOnlyList<NumericSample> FullSamples,
+        IReadOnlyList<NumericSample> Samples,
+        int StartIndex,
+        int EndIndex);
+
+    private sealed record HoverPointInfo(
+        string Key,
+        string Color,
+        double Value,
+        string? Unit,
+        long TimestampMs,
+        double X,
+        double Y);
+
+    private sealed record HoverState(
+        double SnapX,
+        double FocusY,
+        HoverPointInfo FocusItem,
+        List<HoverPointInfo> Items);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var hasChart = PinnedKeys.Count > 0 && VisibleSeries.Any(s => s.Samples.Count >= 2);
+        if (hasChart && !_handlersAttached && !_disposed)
+        {
+            try
+            {
+                _jsModule ??= await JS.InvokeAsync<IJSObjectReference>(
+                    "import", "./_content/LinkStudio.UI/js/workbench.js");
+                _dotNetRef ??= DotNetObjectReference.Create(this);
+                _navHandle = await _jsModule.InvokeAsync<IJSObjectReference?>(
+                    "attachWaveRangeNavigator", _minimapRef, _dotNetRef);
+                _hoverHandle = await _jsModule.InvokeAsync<IJSObjectReference?>(
+                    "attachWaveHoverTracker", _svgRef, _dotNetRef);
+                _handlersAttached = _navHandle is not null || _hoverHandle is not null;
+            }
+            catch (Exception error)
+            {
+                Serilog.Log.Warning(error, "初始化波形交互脚本失败");
+            }
+        }
+        else if (!hasChart && _handlersAttached)
+        {
+            await DetachHandlersAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnRangeChanged(double start, double end)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var clampedStart = Math.Clamp(start, 0.0, 0.95);
+        var clampedEnd = Math.Clamp(end, clampedStart + 0.05, 1.0);
+        await OnViewRangeChanged.InvokeAsync((clampedStart, clampedEnd));
+    }
+
+    [JSInvokable]
+    public void OnSvgHoverMove(double svgX, double svgY)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (svgX < PlotLeft - 6 || svgX > PlotRight + 6 || svgY < PlotTop - 6 || svgY > PlotBottom + 6)
+        {
+            if (_hoverSvgX.HasValue)
+            {
+                _hoverSvgX = null;
+                _hoverSvgY = null;
+                StateHasChanged();
+            }
+
+            return;
+        }
+
+        _hoverSvgX = svgX;
+        _hoverSvgY = svgY;
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnSvgHoverLeave()
+    {
+        if (_disposed || !_hoverSvgX.HasValue)
+        {
+            return;
+        }
+
+        _hoverSvgX = null;
+        _hoverSvgY = null;
+        StateHasChanged();
+    }
+
+    private Task ResetRangeAsync() => OnViewRangeChanged.InvokeAsync((0.0, 1.0));
+
+    private IReadOnlyList<NumericSeriesSnapshot> Suggestions
+    {
+        get
+        {
+            var pinned = new HashSet<string>(PinnedKeys, StringComparer.Ordinal);
+            var query = _inputKey.Trim();
+            return AllSeries
+                .Where(s => !pinned.Contains(s.Key))
+                .Where(s => string.IsNullOrEmpty(query)
+                    || s.Key.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(s => s.Key.StartsWith("gsv.", StringComparison.Ordinal) ? 1 : 0)
+                .ThenBy(s => s.Key, StringComparer.Ordinal)
+                .Take(8)
+                .ToArray();
+        }
+    }
+
+    private IReadOnlyList<NumericSeriesSnapshot> QuickSuggestions =>
+        AllSeries
+            .Where(s => !s.Key.StartsWith("gsv.", StringComparison.Ordinal))
+            .OrderBy(s => s.Key, StringComparer.Ordinal)
+            .Take(6)
+            .ToArray();
+
+    private IReadOnlyList<NumericSeriesSnapshot> VisibleSeries =>
+        PinnedKeys
+            .Where(k => !HiddenKeys.Contains(k))
+            .Select(FindSeries)
+            .Where(s => s is not null)
+            .Cast<NumericSeriesSnapshot>()
+            .ToArray();
+
+    private NumericSeriesSnapshot? FindSeries(string key) =>
+        AllSeries.FirstOrDefault(s => string.Equals(s.Key, key, StringComparison.Ordinal));
+
+    private List<SeriesSlice> BuildVisibleSlices()
+    {
+        var result = new List<SeriesSlice>();
+        for (var i = 0; i < PinnedKeys.Count; i++)
+        {
+            var key = PinnedKeys[i];
+            if (HiddenKeys.Contains(key))
+            {
+                continue;
+            }
+
+            var series = FindSeries(key);
+            if (series is null || series.Samples.Count < 2)
+            {
+                continue;
+            }
+
+            var count = series.Samples.Count;
+            var startIdx = Math.Clamp((int)Math.Floor(ViewStart * (count - 1)), 0, count - 2);
+            var endIdx = Math.Clamp((int)Math.Ceiling(ViewEnd * (count - 1)), startIdx + 1, count - 1);
+            var sliceLen = endIdx - startIdx + 1;
+
+            IReadOnlyList<NumericSample> sliced;
+            if (startIdx == 0 && endIdx == count - 1)
+            {
+                sliced = series.Samples;
+            }
+            else
+            {
+                var arr = new NumericSample[sliceLen];
+                for (var j = 0; j < sliceLen; j++)
+                {
+                    arr[j] = series.Samples[startIdx + j];
+                }
+
+                sliced = arr;
+            }
+
+            result.Add(new SeriesSlice(
+                series.Key,
+                Palette[i % Palette.Length],
+                series.Unit,
+                series.Samples,
+                sliced,
+                startIdx,
+                endIdx));
+        }
+
+        return result;
+    }
+
+    private HoverState? ComputeHoverState(List<SeriesSlice> slices, (double Min, double Max) bounds)
+    {
+        if (_hoverSvgX is not double svgX || _hoverSvgY is not double svgY || slices.Count == 0)
+        {
+            return null;
+        }
+
+        var ratio = Math.Clamp((svgX - PlotLeft) / PlotWidth, 0.0, 1.0);
+        var items = new List<HoverPointInfo>(slices.Count);
+
+        foreach (var slice in slices)
+        {
+            if (slice.Samples.Count < 2)
+            {
+                continue;
+            }
+
+            var idx = Math.Clamp((int)Math.Round(ratio * (slice.Samples.Count - 1)), 0, slice.Samples.Count - 1);
+            var sample = slice.Samples[idx];
+            var x = PlotLeft + (idx / (double)(slice.Samples.Count - 1)) * PlotWidth;
+            var y = MapY(sample.Value, bounds.Min, bounds.Max);
+            items.Add(new HoverPointInfo(
+                slice.Key,
+                slice.Color,
+                sample.Value,
+                slice.Unit,
+                sample.TimestampMs,
+                x,
+                y));
+        }
+
+        if (items.Count == 0)
+        {
+            return null;
+        }
+
+        // 选择纵坐标离鼠标最近的那条曲线作为十字横线焦点，鼠标指哪条线就精准吸附哪条线。
+        var focus = items[0];
+        var minDist = Math.Abs(focus.Y - svgY);
+        for (var i = 1; i < items.Count; i++)
+        {
+            var dist = Math.Abs(items[i].Y - svgY);
+            if (dist < minDist)
+            {
+                minDist = dist;
+                focus = items[i];
+            }
+        }
+
+        return new HoverState(focus.X, focus.Y, focus, items);
+    }
+
+    private void OnInputChanged(ChangeEventArgs e)
+    {
+        _inputKey = e.Value?.ToString() ?? string.Empty;
+        _isSuggestOpen = true;
+    }
+
+    private async Task OnInputKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await AddCurrentInputAsync();
+        }
+        else if (e.Key == "Escape")
+        {
+            _isSuggestOpen = false;
+        }
+    }
+
+    private async Task AddCurrentInputAsync()
+    {
+        var trimmed = _inputKey.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return;
+        }
+
+        _inputKey = string.Empty;
+        _isSuggestOpen = false;
+        await OnAddKey.InvokeAsync(trimmed);
+    }
+
+    private async Task SelectSuggestionAsync(string key)
+    {
+        _inputKey = string.Empty;
+        _isSuggestOpen = false;
+        await OnAddKey.InvokeAsync(key);
+    }
+
+    private static (double Min, double Max) ComputeSliceBounds(List<SeriesSlice> slices)
+    {
+        var min = double.PositiveInfinity;
+        var max = double.NegativeInfinity;
+        foreach (var slice in slices)
+        {
+            for (var i = 0; i < slice.Samples.Count; i++)
+            {
+                var v = slice.Samples[i].Value;
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
+        }
+
+        return NormalizeBounds(min, max);
+    }
+
+    private static (double Min, double Max) ComputeYBounds(IReadOnlyList<NumericSeriesSnapshot> seriesList)
+    {
+        var min = double.PositiveInfinity;
+        var max = double.NegativeInfinity;
+        foreach (var s in seriesList)
+        {
+            if (s.SampleCount == 0) continue;
+            if (s.Min < min) min = s.Min;
+            if (s.Max > max) max = s.Max;
+        }
+
+        return NormalizeBounds(min, max);
+    }
+
+    private static (double Min, double Max) NormalizeBounds(double min, double max)
+    {
+        if (!double.IsFinite(min) || !double.IsFinite(max))
+        {
+            return (-1, 1);
+        }
+
+        var span = max - min;
+        if (span < 1e-6)
+        {
+            var pad = Math.Max(Math.Abs(max) * 0.1, 1.0);
+            return (min - pad, max + pad);
+        }
+
+        var margin = span * 0.12;
+        return (min - margin, max + margin);
+    }
+
+    private static double MapY(double value, double min, double max)
+    {
+        var norm = (value - min) / (max - min);
+        return PlotBottom - norm * PlotHeight;
+    }
+
+    private static string BuildPolylinePoints(
+        IReadOnlyList<NumericSample> samples,
+        double min,
+        double max,
+        double left,
+        double width,
+        double bottom,
+        double height,
+        out double lastX,
+        out double lastY)
+    {
+        var sb = new StringBuilder(samples.Count * 14);
+        var denom = Math.Max(1, samples.Count - 1);
+        var span = Math.Max(1e-9, max - min);
+        lastX = left;
+        lastY = bottom;
+
+        for (var i = 0; i < samples.Count; i++)
+        {
+            var x = left + (i / (double)denom) * width;
+            var y = bottom - ((samples[i].Value - min) / span) * height;
+            if (i > 0) sb.Append(' ');
+            sb.Append(F(x));
+            sb.Append(',');
+            sb.Append(F(y));
+            lastX = x;
+            lastY = y;
+        }
+
+        return sb.ToString();
+    }
+
+    private static string TruncateKey(string key, int maxLen) =>
+        key.Length <= maxLen ? key : key[..(maxLen - 1)] + "…";
+
+    private static string F(double value) => value.ToString("F1", CultureInfo.InvariantCulture);
+
+    private static string Pct(double ratio) => (Math.Clamp(ratio, 0.0, 1.0) * 100.0).ToString("F2", CultureInfo.InvariantCulture) + "%";
+
+    private static string FormatAxisValue(double value)
+    {
+        var abs = Math.Abs(value);
+        if (abs >= 1000) return value.ToString("F0", CultureInfo.InvariantCulture);
+        if (abs >= 10) return value.ToString("F1", CultureInfo.InvariantCulture);
+        return value.ToString("F2", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatPreciseValue(double value)
+    {
+        var abs = Math.Abs(value);
+        if (abs >= 1000) return value.ToString("F1", CultureInfo.InvariantCulture);
+        if (abs >= 10) return value.ToString("F2", CultureInfo.InvariantCulture);
+        return value.ToString("F3", CultureInfo.InvariantCulture);
+    }
+
+    private async Task DetachHandlersAsync()
+    {
+        _handlersAttached = false;
+        foreach (var handle in new[] { _navHandle, _hoverHandle })
+        {
+            if (handle is not null)
+            {
+                try
+                {
+                    await handle.InvokeVoidAsync("dispose");
+                    await handle.DisposeAsync();
+                }
+                catch (JSDisconnectedException)
+                {
+                    // 页面断开时忽略前端监听释放异常。
+                }
+            }
+        }
+
+        _navHandle = null;
+        _hoverHandle = null;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        await DetachHandlersAsync();
+
+        if (_jsModule is not null)
+        {
+            try
+            {
+                await _jsModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // 页面断开时忽略前端模块释放异常。
+            }
+        }
+
+        _dotNetRef?.Dispose();
+    }
+}

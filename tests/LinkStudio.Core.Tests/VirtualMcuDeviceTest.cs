@@ -1,5 +1,6 @@
 using LinkStudio.Core.Bus;
 using LinkStudio.Core.Devices.Virtual;
+using LinkStudio.Core.Protocols;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -161,6 +162,84 @@ namespace LinkStudio.Core.Tests
             await Assert.ThrowsAsync<ObjectDisposedException>(() => device.OpenAsync());
             await Assert.ThrowsAsync<ObjectDisposedException>(() => device.SendAsync(payload));
             await Assert.ThrowsAsync<ObjectDisposedException>(() => device.AutoSendAsync(true, 100));
+        }
+
+        [Fact]
+        public async Task SetSimulationModeAsync_SimulatedImuJson_ProducesValidJsonFrames()
+        {
+            await using var bus = new RawDataBus();
+            await using var device = new VirtualMcuDevice(bus);
+
+            var frameTcs = new TaskCompletionSource<ParsedFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var pipeline = new ProtocolPipeline(
+                bus,
+                device.Id,
+                new LineFramer(),
+                [new JsonProtocolParser()],
+                frame =>
+                {
+                    frameTcs.TrySetResult(frame);
+                    return ValueTask.CompletedTask;
+                });
+
+            await device.SetSimulationModeAsync(VirtualMcuSimulationMode.SimulatedImuJson);
+            Assert.Equal(VirtualMcuSimulationMode.SimulatedImuJson, device.SimulationMode);
+
+            await device.OpenAsync();
+            await device.AutoSendAsync(enabled: true, interval: 40);
+
+            var parsed = await frameTcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await device.CloseAsync();
+
+            Assert.True(parsed.IsValid);
+            Assert.Equal("JSON", parsed.ProtocolName);
+            Assert.Contains(parsed.Fields, f => f.Key == "imu.ax" && f.Kind == ParsedFieldKind.Number);
+            Assert.Contains(parsed.Fields, f => f.Key == "imu.az" && f.Kind == ParsedFieldKind.Number);
+            Assert.Contains(parsed.Fields, f => f.Key == "temp" && f.Kind == ParsedFieldKind.Number);
+        }
+
+        [Fact]
+        public async Task SetSimulationModeAsync_SimulatedGnssNmea_ProducesValidSentencesWithElevationAndAzimuth()
+        {
+            await using var bus = new RawDataBus();
+            await using var device = new VirtualMcuDevice(bus);
+
+            var frames = Channel.CreateUnbounded<ParsedFrame>();
+            await using var pipeline = new ProtocolPipeline(
+                bus,
+                device.Id,
+                new LineFramer(),
+                [new NmeaProtocolParser()],
+                frame =>
+                {
+                    frames.Writer.TryWrite(frame);
+                    return ValueTask.CompletedTask;
+                });
+
+            await device.SetSimulationModeAsync(VirtualMcuSimulationMode.SimulatedGnssNmea);
+            await device.OpenAsync();
+            await device.AutoSendAsync(enabled: true, interval: 50);
+
+            var collected = new List<ParsedFrame>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            while (collected.Count < 6)
+            {
+                collected.Add(await frames.Reader.ReadAsync(timeout.Token));
+            }
+
+            await device.CloseAsync();
+
+            Assert.All(collected, f =>
+            {
+                Assert.True(f.IsValid);
+                Assert.Equal("NMEA-0183", f.ProtocolName);
+            });
+            Assert.Contains(collected, f => f.FrameType == "GGA");
+            Assert.Contains(collected, f => f.FrameType == "RMC");
+            Assert.Contains(collected, f => f.FrameType == "GSV"
+                && f.Fields.Any(x => x.Key.EndsWith(".elev", StringComparison.Ordinal))
+                && f.Fields.Any(x => x.Key.EndsWith(".azim", StringComparison.Ordinal))
+                && f.Fields.Any(x => x.Key.EndsWith(".snr", StringComparison.Ordinal)));
         }
     }
 }
