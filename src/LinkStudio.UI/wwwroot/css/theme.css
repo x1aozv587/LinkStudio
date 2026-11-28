@@ -2151,3 +2151,403 @@ input[type="number"] {
     padding: 0 8px;
     font-size: 11.5px;
 }
+
+/* ==================== V0.3 协议监视页（GNSS 信号条 + 实时字段表 + 帧流） ==================== */
+
+.ls-protocol-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    background: var(--ls-bg-canvas);
+}
+
+.ls-proto-stats {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--ls-text-secondary);
+}
+
+.ls-proto-bad {
+    color: var(--ls-danger-text);
+}
+
+.ls-protocol-body {
+    flex: 1;
+    min-height: 0;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow: hidden;
+}
+
+.ls-gnss-card {
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border);
+    box-shadow: var(--ls-shadow-sm);
+    display: grid;
+    grid-template-columns: minmax(320px, 1.1fr) minmax(280px, 1fr);
+    gap: 18px;
+    flex-shrink: 0;
+}
+
+.ls-gnss-left,
+.ls-gnss-right {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+.ls-gnss-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ls-gnss-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-gnss-title-row h3 {
+    margin: 0;
+    font-size: 14.5px;
+    font-weight: 600;
+}
+
+.ls-fix-badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    background: var(--ls-warn-soft);
+    color: var(--ls-warn);
+}
+
+.ls-fix-badge.is-fixed {
+    background: var(--ls-rx-soft);
+    color: var(--ls-rx);
+}
+
+.ls-gnss-utc {
+    font-size: 12px;
+    color: var(--ls-text-secondary);
+}
+
+.ls-antenna-alert {
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: var(--ls-danger-soft);
+    border: 1px solid var(--ls-danger);
+    color: var(--ls-danger-text);
+    font-size: 12px;
+}
+
+.ls-gnss-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.ls-metric-tile {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--ls-bg-canvas);
+    border: 1px solid var(--ls-border);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.ls-metric-label {
+    font-size: 11px;
+    color: var(--ls-text-muted);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.ls-metric-val {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ls-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ls-gnss-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.ls-gnss-snr-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ls-text-secondary);
+}
+
+.ls-snr-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11.5px;
+}
+
+.ls-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ls-sat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.ls-sat-gp { background: #3B82F6; }
+.ls-sat-bd { background: #10B981; }
+.ls-sat-gl { background: #F59E0B; }
+.ls-sat-other { background: #8B5CF6; }
+
+.ls-snr-empty {
+    flex: 1;
+    min-height: 92px;
+    border-radius: 8px;
+    border: 1px dashed var(--ls-border-strong);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--ls-text-muted);
+}
+
+.ls-snr-bars {
+    flex: 1;
+    min-height: 108px;
+    padding: 8px 10px 6px;
+    border-radius: 8px;
+    background: var(--ls-bg-canvas);
+    border: 1px solid var(--ls-border);
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    overflow-x: auto;
+}
+
+.ls-snr-col {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.ls-snr-val {
+    font-size: 10.5px;
+    color: var(--ls-text-secondary);
+}
+
+.ls-snr-track {
+    width: 14px;
+    height: 66px;
+    border-radius: 999px;
+    background: var(--ls-bg-elevated);
+    display: flex;
+    align-items: flex-end;
+    overflow: hidden;
+}
+
+.ls-snr-fill {
+    width: 100%;
+    border-radius: 999px;
+    transition: height 0.25s ease;
+}
+
+.ls-snr-prn {
+    font-size: 10.5px;
+    color: var(--ls-text-muted);
+}
+
+.ls-proto-grid {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(340px, 1.15fr) minmax(300px, 1fr);
+    gap: 14px;
+}
+
+.ls-proto-panel {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: 12px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border);
+    box-shadow: var(--ls-shadow-sm);
+    overflow: hidden;
+}
+
+.ls-proto-panel-head {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--ls-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.ls-proto-panel-head h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.ls-proto-search {
+    width: 180px;
+    height: 28px;
+    font-size: 12px;
+}
+
+.ls-proto-panel-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.ls-field-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+}
+
+.ls-field-table th {
+    position: sticky;
+    top: 0;
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--ls-bg-statusbar);
+    border-bottom: 1px solid var(--ls-border);
+    color: var(--ls-text-secondary);
+    font-weight: 600;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-size: 12px;
+}
+
+.ls-field-table td {
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--ls-border);
+}
+
+.ls-field-table tbody tr:hover {
+    background: var(--ls-row-hover);
+}
+
+.ls-field-key {
+    color: var(--ls-accent);
+    font-weight: 500;
+}
+
+.ls-field-val {
+    color: var(--ls-text-primary);
+    font-weight: 600;
+}
+
+.ls-field-unit {
+    margin-left: 4px;
+    font-weight: 400;
+    color: var(--ls-text-muted);
+    font-size: 11.5px;
+}
+
+.ls-field-count,
+.ls-field-time {
+    color: var(--ls-text-muted);
+    font-size: 11.5px;
+    white-space: nowrap;
+}
+
+.ls-frame-list {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ls-frame-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.ls-frame-row:hover {
+    background: var(--ls-row-hover);
+}
+
+.ls-frame-row.is-invalid {
+    background: var(--ls-danger-soft);
+}
+
+.ls-frame-type {
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--ls-accent-soft);
+    color: var(--ls-accent);
+    font-weight: 600;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.ls-frame-type.is-bad {
+    background: var(--ls-danger-soft);
+    color: var(--ls-danger-text);
+}
+
+.ls-frame-raw {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ls-text-primary);
+}
+
+.ls-snr-hover-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--ls-accent-soft);
+    color: var(--ls-text-primary);
+    font-size: 11.5px;
+    font-weight: 500;
+}
+
+.ls-snr-col {
+    padding: 3px 2px;
+    border-radius: 6px;
+    cursor: default;
+    transition: background-color 0.12s ease;
+}
+
+.ls-snr-col.is-hovered {
+    background: var(--ls-bg-hover);
+}

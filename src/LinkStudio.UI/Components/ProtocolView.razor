@@ -1,0 +1,397 @@
+@using LinkStudio.Core.Protocols
+@implements IDisposable
+
+<div class="ls-protocol-page">
+    <!-- 顶部栏：连接态、协议切换、统计与清空 -->
+    <header class="ls-topbar">
+        <div class="ls-topbar-group">
+            <span class="ls-status-pill @(SessionHub.IsDeviceOpen ? "is-connected" : string.Empty)">
+                <span class="ls-status-pill-dot"></span>
+                @(SessionHub.IsDeviceOpen ? $"监听中 · {SessionHub.ActiveDeviceName}" : "未连接设备")
+            </span>
+
+            <div class="ls-segmented" role="group" aria-label="协议筛选">
+                <button type="button"
+                        class="ls-seg-btn @(SessionHub.ProtocolFilter == ProtocolFilterMode.Auto ? "is-active" : string.Empty)"
+                        @onclick="() => SetProtocolFilter(ProtocolFilterMode.Auto)">
+                    自动识别
+                </button>
+                <button type="button"
+                        class="ls-seg-btn @(SessionHub.ProtocolFilter == ProtocolFilterMode.NmeaOnly ? "is-active" : string.Empty)"
+                        @onclick="() => SetProtocolFilter(ProtocolFilterMode.NmeaOnly)">
+                    NMEA-0183
+                </button>
+                <button type="button"
+                        class="ls-seg-btn @(SessionHub.ProtocolFilter == ProtocolFilterMode.JsonOnly ? "is-active" : string.Empty)"
+                        @onclick="() => SetProtocolFilter(ProtocolFilterMode.JsonOnly)">
+                    JSON
+                </button>
+            </div>
+        </div>
+
+        <div class="ls-topbar-group ls-topbar-right">
+            <div class="ls-proto-stats ls-mono">
+                <span>已解析 <strong>@SessionHub.TotalParsedCount</strong> 帧</span>
+                <span>字段 <strong>@_fields.Count</strong> 个</span>
+                @if (SessionHub.InvalidFrameCount > 0)
+                {
+                    <span class="ls-proto-bad">校验失败 <strong>@SessionHub.InvalidFrameCount</strong></span>
+                }
+            </div>
+
+            <button type="button"
+                    class="ls-btn-subtle"
+                    disabled="@(SessionHub.TotalParsedCount == 0)"
+                    @onclick="ClearProtocolData">
+                清空数据
+            </button>
+        </div>
+    </header>
+
+    <div class="ls-protocol-body">
+        @if (_gnss.HasData && SessionHub.ProtocolFilter != ProtocolFilterMode.JsonOnly)
+        {
+            <!-- GNSS 实时概览 + 多星座卫星 SNR 信号条 -->
+            <section class="ls-gnss-card" aria-label="GNSS 卫星与定位概览">
+                <div class="ls-gnss-left">
+                    <div class="ls-gnss-head">
+                        <div class="ls-gnss-title-row">
+                            <h3>GNSS 实时概览</h3>
+                            <span class="ls-fix-badge @(IsFixed ? "is-fixed" : string.Empty)">@GetFixLabel()</span>
+                        </div>
+                        @if (_gnss.UtcTime is not null)
+                        {
+                            <span class="ls-gnss-utc ls-mono">UTC @_gnss.UtcTime</span>
+                        }
+                    </div>
+
+                    @if (_gnss.AntennaAlert is not null)
+                    {
+                        <div class="ls-antenna-alert" role="alert">
+                            <strong>天线提示：</strong>@_gnss.AntennaAlert
+                        </div>
+                    }
+
+                    <div class="ls-gnss-metrics ls-mono">
+                        <div class="ls-metric-tile">
+                            <span class="ls-metric-label">纬度</span>
+                            <span class="ls-metric-val">@(_gnss.Latitude.HasValue ? $"{_gnss.Latitude.Value:F6}°" : "--")</span>
+                        </div>
+                        <div class="ls-metric-tile">
+                            <span class="ls-metric-label">经度</span>
+                            <span class="ls-metric-val">@(_gnss.Longitude.HasValue ? $"{_gnss.Longitude.Value:F6}°" : "--")</span>
+                        </div>
+                        <div class="ls-metric-tile">
+                            <span class="ls-metric-label">海拔 / 速度</span>
+                            <span class="ls-metric-val">
+                                @(_gnss.AltitudeM.HasValue ? $"{_gnss.AltitudeM.Value:F1} m" : "--")
+                                /
+                                @(_gnss.SpeedKmh.HasValue ? $"{_gnss.SpeedKmh.Value:F1} km/h" : "--")
+                            </span>
+                        </div>
+                        <div class="ls-metric-tile">
+                            <span class="ls-metric-label">定位星 / HDOP / PDOP</span>
+                            <span class="ls-metric-val">
+                                @(_gnss.SatellitesUsed?.ToString() ?? "--") 颗 ·
+                                @(_gnss.Hdop.HasValue ? _gnss.Hdop.Value.ToString("F1") : "--") /
+                                @(_gnss.Pdop.HasValue ? _gnss.Pdop.Value.ToString("F1") : "--")
+                            </span>
+                        </div>
+                    </div>
+
+                    @if (_gnss.ChipNotes.Count > 0)
+                    {
+                        <div class="ls-gnss-chips ls-mono">
+                            @foreach (var note in _gnss.ChipNotes)
+                            {
+                                <span class="ls-badge-muted">@note</span>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="ls-gnss-right">
+                    <div class="ls-gnss-snr-head">
+                        @if (_hoveredSat is not null)
+                        {
+                            <span class="ls-snr-hover-pill ls-mono">
+                                <i class="ls-sat-dot @GetSatelliteColorClass(_hoveredSat.Talker)"></i>
+                                @FormatSatelliteDetail(_hoveredSat)
+                            </span>
+                        }
+                        else
+                        {
+                            <span>可见卫星载噪比（SNR dB-Hz）</span>
+                        }
+                        <div class="ls-snr-legend">
+                            <span class="ls-legend-item"><i class="ls-sat-dot ls-sat-gp"></i>GPS</span>
+                            <span class="ls-legend-item"><i class="ls-sat-dot ls-sat-bd"></i>BDS</span>
+                            <span class="ls-legend-item"><i class="ls-sat-dot ls-sat-gl"></i>GLO</span>
+                        </div>
+                    </div>
+
+                    @if (_gnss.Satellites.Count == 0)
+                    {
+                        <div class="ls-snr-empty">等待 GSV 卫星信号数据…</div>
+                    }
+                    else
+                    {
+                        <div class="ls-snr-bars ls-mono" @onmouseleave="() => _hoveredSat = null">
+                            @foreach (var sat in _gnss.Satellites.Take(16))
+                            {
+                                var currentSat = sat;
+                                var heightPct = Math.Clamp(sat.SnrDb / 55.0 * 100.0, 8.0, 100.0);
+                                <div class="ls-snr-col @(_hoveredSat is not null && _hoveredSat.Talker == sat.Talker && _hoveredSat.Prn == sat.Prn ? "is-hovered" : string.Empty)"
+                                     @onmouseenter="() => _hoveredSat = currentSat">
+                                    <span class="ls-snr-val">@($"{sat.SnrDb:F0}")</span>
+                                    <div class="ls-snr-track">
+                                        <div class="ls-snr-fill @GetSatelliteColorClass(sat.Talker)"
+                                             style="height: @(heightPct.ToString("F0"))%;"></div>
+                                    </div>
+                                    <span class="ls-snr-prn">@sat.Prn</span>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+        }
+
+        <!-- 下方左右双面板：左侧实时结构化字段表，右侧最近解析帧 -->
+        <div class="ls-proto-grid">
+            <section class="ls-proto-panel" aria-label="实时结构化字段">
+                <header class="ls-proto-panel-head">
+                    <h3>实时字段表</h3>
+                    <input class="ls-input ls-proto-search ls-mono"
+                           type="text"
+                           placeholder="筛选字段名..."
+                           @bind="_fieldSearch"
+                           @bind:event="oninput" />
+                </header>
+
+                <div class="ls-proto-panel-scroll">
+                    @{
+                        var visibleFields = GetVisibleFields();
+                    }
+                    @if (visibleFields.Count == 0)
+                    {
+                        <div class="ls-empty-state">
+                            <div class="ls-empty-title">暂无解析字段</div>
+                            <p class="ls-empty-hint">在「终端」页打开串口或虚拟设备并收到 NMEA / JSON 数据后，字段将实时出现在这里。</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <table class="ls-field-table ls-mono">
+                            <thead>
+                                <tr>
+                                    <th>字段名</th>
+                                    <th>当前值</th>
+                                    <th>次数</th>
+                                    <th>更新时间</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var field in visibleFields)
+                                {
+                                    <tr>
+                                        <td class="ls-field-key">@field.Key</td>
+                                        <td class="ls-field-val">
+                                            <span>@field.DisplayValue</span>
+                                            @if (!string.IsNullOrEmpty(field.Unit))
+                                            {
+                                                <span class="ls-field-unit">@field.Unit</span>
+                                            }
+                                        </td>
+                                        <td class="ls-field-count">×@field.UpdateCount</td>
+                                        <td class="ls-field-time">@DateTimeOffset.FromUnixTimeMilliseconds(field.LastUpdatedMs).ToLocalTime().ToString("HH:mm:ss.fff")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                </div>
+            </section>
+
+            <section class="ls-proto-panel" aria-label="最近解析帧">
+                <header class="ls-proto-panel-head">
+                    <h3>最近解析帧</h3>
+                    <span class="ls-inline-label ls-mono">最近 @_frames.Count 条</span>
+                </header>
+
+                <div class="ls-proto-panel-scroll ls-mono">
+                    @if (_frames.Count == 0)
+                    {
+                        <div class="ls-empty-state">
+                            <div class="ls-empty-title">等待协议帧</div>
+                            <p class="ls-empty-hint">已启用 NMEA-0183 与 JSON 解析器，普通调试日志会自动过滤。</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="ls-frame-list">
+                            @foreach (var frame in _frames)
+                            {
+                                <div class="ls-frame-row @(frame.IsValid ? string.Empty : "is-invalid")">
+                                    <span class="ls-log-time">@DateTimeOffset.FromUnixTimeMilliseconds(frame.TimestampMs).ToLocalTime().ToString("HH:mm:ss.fff")</span>
+                                    <span class="ls-frame-type @(frame.IsValid ? string.Empty : "is-bad")">@frame.FrameType</span>
+                                    <span class="ls-frame-raw" title="@frame.RawText">
+                                        @(frame.IsValid ? frame.RawText : $"{frame.ErrorMessage} · {frame.RawText}")
+                                    </span>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Inject]
+    private TerminalSessionHub SessionHub { get; set; } = default!;
+
+    private IReadOnlyList<LiveFieldState> _fields = [];
+    private IReadOnlyList<ParsedFrame> _frames = [];
+    private GnssSummarySnapshot _gnss = new();
+    private SatelliteSignal? _hoveredSat;
+    private string _fieldSearch = string.Empty;
+    private Timer? _refreshThrottleTimer;
+    private int _refreshScheduled;
+    private bool _disposed;
+
+    private bool IsFixed =>
+        (_gnss.FixQuality is > 0)
+        || (_gnss.FixType is >= 2)
+        || string.Equals(_gnss.RmcStatus, "A", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized()
+    {
+        _refreshThrottleTimer = new Timer(OnThrottleElapsed, null, Timeout.Infinite, Timeout.Infinite);
+        SessionHub.ProtocolDataChanged += HandleProtocolDataChanged;
+        SessionHub.ConnectionStateChanged += HandleProtocolDataChanged;
+        ReloadSnapshots();
+    }
+
+    private void HandleProtocolDataChanged()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // 100 ms 节流合并：AT6558R 每秒突发 10+ 条 NMEA 语句时合并为一次顺滑刷新。
+        if (Interlocked.CompareExchange(ref _refreshScheduled, 1, 0) == 0)
+        {
+            _refreshThrottleTimer?.Change(100, Timeout.Infinite);
+        }
+    }
+
+    private void OnThrottleElapsed(object? state)
+    {
+        Interlocked.Exchange(ref _refreshScheduled, 0);
+        if (_disposed)
+        {
+            return;
+        }
+
+        _ = InvokeAsync(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            ReloadSnapshots();
+            StateHasChanged();
+        });
+    }
+
+    private void SetProtocolFilter(ProtocolFilterMode mode)
+    {
+        // 用户主动切换筛选时立刻同步快照，避免等待 100 ms 节流定时器造成界面两段跳动。
+        SessionHub.ProtocolFilter = mode;
+        ReloadSnapshots();
+    }
+
+    private void ClearProtocolData()
+    {
+        SessionHub.ClearProtocolData();
+        ReloadSnapshots();
+    }
+
+    private void ReloadSnapshots()
+    {
+        _fields = SessionHub.GetLiveFieldsSnapshot();
+        _frames = SessionHub.GetParsedFramesSnapshot();
+        _gnss = SessionHub.GetGnssSnapshot();
+    }
+
+    private List<LiveFieldState> GetVisibleFields()
+    {
+        if (string.IsNullOrWhiteSpace(_fieldSearch))
+        {
+            return _fields.ToList();
+        }
+
+        var keyword = _fieldSearch.Trim();
+        return _fields
+            .Where(f => f.Key.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || f.DisplayValue.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private string GetFixLabel()
+    {
+        if (_gnss.FixType == 3) return "3D 已定位";
+        if (_gnss.FixType == 2) return "2D 已定位";
+        if (_gnss.FixQuality is > 0 || string.Equals(_gnss.RmcStatus, "A", StringComparison.OrdinalIgnoreCase))
+        {
+            return "已定位";
+        }
+
+        return "未定位";
+    }
+
+    private static string GetSatelliteColorClass(string talker) => talker switch
+    {
+        "GP" => "ls-sat-gp",
+        "BD" or "GB" => "ls-sat-bd",
+        "GL" => "ls-sat-gl",
+        _ => "ls-sat-other"
+    };
+
+    private static string FormatSatelliteDetail(SatelliteSignal sat)
+    {
+        var constellation = sat.Talker switch
+        {
+            "GP" => "GPS",
+            "BD" or "GB" => "北斗",
+            "GL" => "GLONASS",
+            "GA" => "Galileo",
+            _ => sat.Talker
+        };
+
+        var detail = $"{constellation} #{sat.Prn} · {sat.SnrDb:F0} dB";
+        if (sat.Elevation.HasValue)
+        {
+            detail += $" · 仰角 {sat.Elevation.Value:F0}°";
+        }
+
+        if (sat.Azimuth.HasValue)
+        {
+            detail += $" · 方位 {sat.Azimuth.Value:F0}°";
+        }
+
+        return detail;
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        SessionHub.ProtocolDataChanged -= HandleProtocolDataChanged;
+        SessionHub.ConnectionStateChanged -= HandleProtocolDataChanged;
+        _refreshThrottleTimer?.Dispose();
+    }
+}
