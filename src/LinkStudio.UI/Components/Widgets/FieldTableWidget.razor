@@ -1,0 +1,82 @@
+<section class="ls-widget-card ls-field-table-widget" aria-label="@Title">
+    <header class="ls-field-table-head">
+        <span class="ls-widget-title-sm">@Title</span>
+        <input class="ls-input ls-proto-search ls-mono"
+               type="text"
+               placeholder="筛选字段名..."
+               value="@Filter"
+               @oninput="OnFilterInput" />
+    </header>
+
+    <div class="ls-field-table-scroll">
+        @{
+            var visible = GetVisibleFields();
+        }
+        @if (visible.Count == 0)
+        {
+            <div class="ls-snr-empty">等待结构化协议字段数据…</div>
+        }
+        else
+        {
+            <table class="ls-field-table ls-mono">
+                <thead>
+                    <tr>
+                        <th>字段名</th>
+                        <th>当前值</th>
+                        <th>次数</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var field in visible)
+                    {
+                        <tr>
+                            <td class="ls-field-key">@field.Key</td>
+                            <td class="ls-field-val">
+                                <span>@field.DisplayValue</span>
+                                @if (!string.IsNullOrEmpty(field.Unit))
+                                {
+                                    <span class="ls-field-unit">@field.Unit</span>
+                                }
+                            </td>
+                            <td class="ls-field-count">×@field.UpdateCount</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter]
+    public string Title { get; set; } = "实时字段表";
+
+    [Parameter]
+    public IReadOnlyList<LiveFieldState> Fields { get; set; } = [];
+
+    [Parameter]
+    public string? Filter { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> FilterChanged { get; set; }
+
+    private Task OnFilterInput(ChangeEventArgs e)
+    {
+        var value = e.Value?.ToString();
+        return FilterChanged.InvokeAsync(string.IsNullOrWhiteSpace(value) ? null : value);
+    }
+
+    private List<LiveFieldState> GetVisibleFields()
+    {
+        if (string.IsNullOrWhiteSpace(Filter))
+        {
+            return Fields.ToList();
+        }
+
+        var keyword = Filter.Trim();
+        return Fields
+            .Where(f => f.Key.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || f.DisplayValue.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+}

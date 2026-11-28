@@ -268,11 +268,12 @@
                     <div class="ls-wave-nav-actions">
                         @if (IsZoomedOrPanned)
                         {
-                            <button type="button" class="ls-link-btn" @onclick="ResetRangeAsync">重置全部</button>
+                            <span class="ls-wave-paused-pill">● 已自动暂停</span>
+                            <button type="button" class="ls-link-btn" @onclick="ResetRangeAsync">继续实时</button>
                         }
                         else
                         {
-                            <span class="ls-nav-tip">拖动下方预览条可缩放或回看历史</span>
+                            <span class="ls-nav-tip">滚轮缩放波形（自动暂停）· 拖动预览条回看历史</span>
                         }
                     </div>
                 </div>
@@ -333,6 +334,7 @@
     private bool _isSuggestOpen;
     private double? _hoverSvgX;
     private double? _hoverSvgY;
+    private IReadOnlyList<NumericSeriesSnapshot>? _frozenSeries;
 
     private ElementReference _svgRef;
     private ElementReference _minimapRef;
@@ -344,6 +346,22 @@
     private bool _disposed;
 
     private bool IsZoomedOrPanned => ViewStart > 0.005 || ViewEnd < 0.995;
+
+    // 缩放或回看历史期间使用定格快照，防止放大查看细节时曲线不断移动；回到全量范围后自动恢复实时流。
+    private IReadOnlyList<NumericSeriesSnapshot> EffectiveSeries =>
+        IsZoomedOrPanned && _frozenSeries is not null ? _frozenSeries : AllSeries;
+
+    protected override void OnParametersSet()
+    {
+        if (!IsZoomedOrPanned)
+        {
+            _frozenSeries = null;
+        }
+        else if (_frozenSeries is null && AllSeries.Count > 0)
+        {
+            _frozenSeries = AllSeries;
+        }
+    }
 
     private sealed record SeriesSlice(
         string Key,
@@ -406,7 +424,48 @@
 
         var clampedStart = Math.Clamp(start, 0.0, 0.95);
         var clampedEnd = Math.Clamp(end, clampedStart + 0.05, 1.0);
+        if (clampedStart > 0.005 || clampedEnd < 0.995)
+        {
+            _frozenSeries ??= AllSeries;
+        }
+        else
+        {
+            _frozenSeries = null;
+        }
+
         await OnViewRangeChanged.InvokeAsync((clampedStart, clampedEnd));
+    }
+
+    [JSInvokable]
+    public async Task OnSvgWheelZoom(double cursorRatio, double deltaY)
+    {
+        if (_disposed || VisibleSeries.Count == 0)
+        {
+            return;
+        }
+
+        var currentSpan = Math.Max(0.05, ViewEnd - ViewStart);
+        // 向上滚轮放大（窗口缩小 20%），向下滚轮缩小（窗口扩大 25%）。
+        var factor = deltaY < 0 ? 0.8 : 1.25;
+        var nextSpan = Math.Clamp(currentSpan * factor, 0.05, 1.0);
+
+        // 以鼠标当前位置为锚点缩放，保证光标指着的特征点留在原地。
+        var anchor = ViewStart + Math.Clamp(cursorRatio, 0.0, 1.0) * currentSpan;
+        var nextStart = Math.Clamp(anchor - cursorRatio * nextSpan, 0.0, 1.0 - nextSpan);
+        var nextEnd = Math.Clamp(nextStart + nextSpan, nextStart + 0.05, 1.0);
+
+        if (nextSpan >= 0.995)
+        {
+            nextStart = 0.0;
+            nextEnd = 1.0;
+            _frozenSeries = null;
+        }
+        else
+        {
+            _frozenSeries ??= AllSeries;
+        }
+
+        await OnViewRangeChanged.InvokeAsync((nextStart, nextEnd));
     }
 
     [JSInvokable]
@@ -447,7 +506,11 @@
         StateHasChanged();
     }
 
-    private Task ResetRangeAsync() => OnViewRangeChanged.InvokeAsync((0.0, 1.0));
+    private Task ResetRangeAsync()
+    {
+        _frozenSeries = null;
+        return OnViewRangeChanged.InvokeAsync((0.0, 1.0));
+    }
 
     private IReadOnlyList<NumericSeriesSnapshot> Suggestions
     {
@@ -482,7 +545,7 @@
             .ToArray();
 
     private NumericSeriesSnapshot? FindSeries(string key) =>
-        AllSeries.FirstOrDefault(s => string.Equals(s.Key, key, StringComparison.Ordinal));
+        EffectiveSeries.FirstOrDefault(s => string.Equals(s.Key, key, StringComparison.Ordinal));
 
     private List<SeriesSlice> BuildVisibleSlices()
     {

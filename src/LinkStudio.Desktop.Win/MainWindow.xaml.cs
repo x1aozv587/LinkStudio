@@ -2,6 +2,7 @@ using System.Windows;
 using LinkStudio.Core;
 using LinkStudio.Core.Services;
 using LinkStudio.Core.Services.Interfaces;
+using LinkStudio.Core.Workspaces;
 using LinkStudio.Desktop.Win.Services;
 using LinkStudio.UI.Services;
 using LinkStudio.UI.State;
@@ -29,6 +30,7 @@ public partial class MainWindow : Window
         serviceCollection.AddSingleton<IPresetWindowService, WindowsPresetWindowService>();
         serviceCollection.AddSingleton<IDeviceChangeMonitor>(_deviceChangeMonitor);
         serviceCollection.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
+        serviceCollection.AddSingleton<IWorkspaceStore>(_ => new JsonWorkspaceStore());
         serviceCollection.AddSingleton<WorkbenchSettings>();
         serviceCollection.AddSingleton<TerminalSessionHub>();
 
