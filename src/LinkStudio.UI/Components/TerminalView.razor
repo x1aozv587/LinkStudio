@@ -3,6 +3,7 @@
 @using System.Text
 @using LinkStudio.Core.Bus
 @using LinkStudio.Core.Devices
+@using LinkStudio.Core.Devices.Replay
 @using LinkStudio.Core.Devices.Serial
 @using LinkStudio.Core.Devices.Virtual
 @using LinkStudio.Core.Helper
@@ -28,6 +29,12 @@
                         disabled="@(_isConnectedOrBusy)"
                         @onclick="() => SelectMode(DeviceMode.VirtualMcu)">
                     虚拟 MCU
+                </button>
+                <button type="button"
+                        class="ls-seg-btn @(_mode == DeviceMode.LogReplay ? "is-active" : string.Empty)"
+                        disabled="@(_isConnectedOrBusy)"
+                        @onclick="() => SelectMode(DeviceMode.LogReplay)">
+                    日志回放
                 </button>
             </div>
 
@@ -102,7 +109,7 @@
                     </div>
                 </div>
             }
-            else
+            else if (_mode == DeviceMode.VirtualMcu)
             {
                 <div class="ls-virtual-controls">
                     <LinkSelect TValue="VirtualMcuSimulationMode"
@@ -135,10 +142,25 @@
                     </button>
                 </div>
             }
+            else
+            {
+                <div class="ls-replay-picker">
+                    <button type="button"
+                            class="ls-btn-subtle"
+                            disabled="@(_isConnectedOrBusy || !FilePicker.IsSupported)"
+                            title="@(FilePicker.IsSupported ? "选择串口或协议日志文件（.log / .txt / .nmea / .jsonl）" : "仅桌面端支持本地文件弹窗")"
+                            @onclick="PickReplayFileAsync">
+                        选择日志…
+                    </button>
+                    <span class="ls-badge-muted ls-mono ls-replay-file-badge" title="@_replayFilePath">
+                        @(string.IsNullOrWhiteSpace(_replayFilePath) ? "未选择文件" : Path.GetFileName(_replayFilePath))
+                    </span>
+                </div>
+            }
 
             <button type="button"
                     class="ls-connect-btn @(_device is not null ? "is-open" : string.Empty)"
-                    disabled="@(_isChanging || (_mode == DeviceMode.Serial && _device is null && string.IsNullOrWhiteSpace(_selectedPort)))"
+                    disabled="@(_isChanging || (_mode == DeviceMode.Serial && _device is null && string.IsNullOrWhiteSpace(_selectedPort)) || (_mode == DeviceMode.LogReplay && _device is null && string.IsNullOrWhiteSpace(_replayFilePath)))"
                     @onclick="ToggleConnectionAsync">
                 <span class="ls-status-dot @(_device?.IsOpen == true ? "is-live" : string.Empty)"></span>
                 @GetConnectButtonText()
@@ -213,6 +235,52 @@
             <span>@_connectionError</span>
             <button type="button" class="ls-banner-close" @onclick="() => _connectionError = null">×</button>
         </div>
+    }
+
+    @if (_device is LogReplayDevice activeReplay)
+    {
+        <!-- V0.6 日志回放时间轴控制条 -->
+        <section class="ls-replay-bar" aria-label="日志回放控制条">
+            <button type="button"
+                    class="ls-btn-subtle @(activeReplay.IsPlaying ? string.Empty : "is-accent")"
+                    @onclick="ToggleReplayPlayPause">
+                @(activeReplay.IsPlaying ? "暂停" : "播放")
+            </button>
+
+            <button type="button"
+                    class="ls-btn-subtle"
+                    title="清空当前图表与日志，从第 1 帧重新回放"
+                    @onclick="RestartReplay">
+                重播
+            </button>
+
+            <LinkSelect TValue="double"
+                        Options="_replaySpeedOptions"
+                        Value="_replaySpeed"
+                        ValueChanged="OnReplaySpeedChanged"
+                        CssClass="ls-replay-speed-select"
+                        IsMono="true"
+                        AriaLabel="回放倍速" />
+
+            <button type="button"
+                    class="ls-pill-toggle @(_replayLoop ? "is-active" : string.Empty)"
+                    title="播完后自动循环重播"
+                    @onclick="ToggleReplayLoop">
+                循环
+            </button>
+
+            <input class="ls-replay-slider"
+                   type="range"
+                   min="0"
+                   max="@Math.Max(0, activeReplay.TotalFrames - 1)"
+                   value="@Math.Min(activeReplay.CurrentIndex, Math.Max(0, activeReplay.TotalFrames - 1))"
+                   aria-label="回放时间轴进度"
+                   @oninput="OnReplaySeekInput" />
+
+            <span class="ls-replay-progress ls-mono">
+                @activeReplay.CurrentIndex / @activeReplay.TotalFrames 帧
+            </span>
+        </section>
     }
 
     <!-- 中间超大接收区：支持焦点内 Ctrl+A 仅全选接收区、拖拽连带时间复制、双击复制整行 -->
@@ -593,7 +661,8 @@
     private enum DeviceMode
     {
         Serial,
-        VirtualMcu
+        VirtualMcu,
+        LogReplay
     }
 
     [Parameter, EditorRequired]
@@ -607,6 +676,9 @@
 
     [Inject]
     private IFolderPickerService FolderPicker { get; set; } = default!;
+
+    [Inject]
+    private IFilePickerService FilePicker { get; set; } = default!;
 
     [Inject]
     private IFilterWindowService FilterWindowService { get; set; } = default!;
@@ -691,6 +763,16 @@
         new(VirtualMcuSimulationMode.BasicTick, "基础心跳 (Tick)")
     ];
 
+    private static readonly IReadOnlyList<LinkSelect<double>.SelectOption> _replaySpeedOptions =
+    [
+        new(0.5, "0.5×"),
+        new(1.0, "1×"),
+        new(2.0, "2×"),
+        new(5.0, "5×"),
+        new(10.0, "10×"),
+        new(0.0, "全速")
+    ];
+
     private string[] _availablePorts = [];
     private IReadOnlyList<LinkSelect<string>.SelectOption> _portOptions = [];
     private string _selectedPort = string.Empty;
@@ -701,6 +783,10 @@
     private int _virtualIntervalMs = 250;
     private bool _isVirtualAutoSending;
     private bool _isTogglingVirtualAuto;
+
+    private string _replayFilePath = string.Empty;
+    private double _replaySpeed = 1.0;
+    private bool _replayLoop;
 
     private string _status = "未连接";
     private string? _connectionError;
@@ -728,7 +814,9 @@
     private bool _isConnectedOrBusy => _isChanging || _device is not null;
 
     private bool CanSend => !_disposed && !_isChanging && !_isSending
-        && _device?.IsOpen == true && !string.IsNullOrEmpty(_draft);
+        && _device?.IsOpen == true
+        && _device is not LogReplayDevice
+        && !string.IsNullOrEmpty(_draft);
 
     private bool CanControlVirtualAuto => !_disposed && !_isChanging && !_isTogglingVirtualAuto
         && _device is VirtualMcuDevice { IsOpen: true };
@@ -1047,6 +1135,11 @@
             return _device is null ? "启动虚拟设备" : "停止虚拟设备";
         }
 
+        if (_mode == DeviceMode.LogReplay)
+        {
+            return _device is null ? "加载回放" : "停止回放";
+        }
+
         return _device is null ? "打开串口" : "关闭串口";
     }
 
@@ -1127,11 +1220,32 @@
                 Settings.NotifyChanged();
             }
         }
-        else
+        else if (_mode == DeviceMode.VirtualMcu)
         {
             var virtualDevice = new VirtualMcuDevice(bus);
             await virtualDevice.SetSimulationModeAsync(_virtualSimMode);
             device = virtualDevice;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(_replayFilePath) || !File.Exists(_replayFilePath))
+            {
+                await bus.DisposeAsync();
+                throw new InvalidOperationException("请先选择一个存在的日志文件。");
+            }
+
+            var frames = await LogReplayParser.LoadFileAsync(_replayFilePath);
+            if (frames.Count == 0)
+            {
+                await bus.DisposeAsync();
+                throw new InvalidOperationException("所选日志文件中未找到可回放的数据行。");
+            }
+
+            var replayDevice = new LogReplayDevice(bus, Path.GetFileName(_replayFilePath), frames);
+            replayDevice.SetSpeed(_replaySpeed);
+            replayDevice.Loop = _replayLoop;
+            replayDevice.ProgressChanged += HandleReplayProgressChanged;
+            device = replayDevice;
         }
 
         _bus = bus;
@@ -1139,7 +1253,7 @@
 
         try
         {
-            if (Settings.Serial.AutoSaveSerialLogOnOpen)
+            if (Settings.Serial.AutoSaveSerialLogOnOpen && device is not LogReplayDevice)
             {
                 // 作为独立订阅者挂到 RawDataBus 上，按当前列设置异步写盘，不阻塞界面与串口收发。
                 _logRecorder = new SerialLogRecorder(
@@ -1168,9 +1282,18 @@
 
             await device.OpenAsync();
             SessionHub.SetActiveDevice(device);
-            _status = _mode == DeviceMode.Serial
-                ? $"已连接 {_selectedPort} · {_baudRateText.Trim()} bps"
-                : "虚拟 MCU 运行中";
+
+            if (device is LogReplayDevice startedReplay)
+            {
+                startedReplay.Play();
+                _status = $"回放中 · {startedReplay.Name}（{startedReplay.TotalFrames} 帧）";
+            }
+            else
+            {
+                _status = _mode == DeviceMode.Serial
+                    ? $"已连接 {_selectedPort} · {_baudRateText.Trim()} bps"
+                    : "虚拟 MCU 运行中";
+            }
         }
         catch
         {
@@ -1216,6 +1339,10 @@
         {
             serialDevice.Faulted -= HandleSerialFaulted;
         }
+        else if (device is LogReplayDevice replayDevice)
+        {
+            replayDevice.ProgressChanged -= HandleReplayProgressChanged;
+        }
 
         try
         {
@@ -1246,6 +1373,95 @@
                     await recorder.DisposeAsync();
                 }
             }
+        }
+    }
+
+    private async Task PickReplayFileAsync()
+    {
+        if (!FilePicker.IsSupported || _isConnectedOrBusy)
+        {
+            return;
+        }
+
+        var selected = await FilePicker.PickFileAsync(
+            "选择要回放的串口或协议日志文件",
+            "日志文件 (*.log;*.txt;*.nmea;*.jsonl)|*.log;*.txt;*.nmea;*.jsonl|所有文件 (*.*)|*.*",
+            Settings.Serial.SerialLogDirectory);
+        if (!string.IsNullOrWhiteSpace(selected))
+        {
+            _replayFilePath = selected;
+            _connectionError = null;
+        }
+    }
+
+    private void HandleReplayProgressChanged()
+    {
+        if (_disposed || !IsVisible)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _uiRefreshScheduled, 1, 0) == 0)
+        {
+            _uiRefreshThrottleTimer?.Change(60, Timeout.Infinite);
+        }
+    }
+
+    private void ToggleReplayPlayPause()
+    {
+        if (_device is not LogReplayDevice replay)
+        {
+            return;
+        }
+
+        if (replay.IsPlaying)
+        {
+            replay.Pause();
+        }
+        else
+        {
+            replay.Play();
+        }
+    }
+
+    private void RestartReplay()
+    {
+        if (_device is not LogReplayDevice replay)
+        {
+            return;
+        }
+
+        replay.Pause();
+        ClearEntries();
+        SessionHub.ClearProtocolData();
+        replay.Seek(0);
+        replay.Play();
+    }
+
+    private void OnReplaySpeedChanged(double speed)
+    {
+        _replaySpeed = speed;
+        if (_device is LogReplayDevice replay)
+        {
+            replay.SetSpeed(speed);
+        }
+    }
+
+    private void ToggleReplayLoop()
+    {
+        _replayLoop = !_replayLoop;
+        if (_device is LogReplayDevice replay)
+        {
+            replay.Loop = _replayLoop;
+        }
+    }
+
+    private void OnReplaySeekInput(ChangeEventArgs e)
+    {
+        if (_device is LogReplayDevice replay
+            && int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
+        {
+            replay.Seek(idx);
         }
     }
 
