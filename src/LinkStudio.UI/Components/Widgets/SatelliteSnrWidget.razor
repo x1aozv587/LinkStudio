@@ -1,0 +1,99 @@
+@using System.Globalization
+
+<div class="@(ShowCardChrome ? "ls-widget-card ls-snr-widget" : "ls-snr-widget-bare")">
+    <div class="ls-gnss-snr-head">
+        @if (_hoveredSat is not null)
+        {
+            <span class="ls-snr-hover-pill ls-mono">
+                <i class="ls-sat-dot @GetSatelliteColorClass(_hoveredSat.Talker)"></i>
+                @FormatSatelliteDetail(_hoveredSat)
+            </span>
+        }
+        else
+        {
+            <span class="ls-widget-title-sm">@Title</span>
+        }
+
+        <div class="ls-snr-legend">
+            <span class="ls-legend-item"><i class="ls-sat-dot ls-sat-gp"></i>GPS</span>
+            <span class="ls-legend-item"><i class="ls-sat-dot ls-sat-bd"></i>BDS</span>
+            <span class="ls-legend-item"><i class="ls-sat-dot ls-sat-gl"></i>GLO</span>
+        </div>
+    </div>
+
+    @if (Satellites.Count == 0)
+    {
+        <div class="ls-snr-empty">等待 GSV 卫星信号数据…</div>
+    }
+    else
+    {
+        <div class="ls-snr-bars ls-mono" @onmouseleave="() => _hoveredSat = null">
+            @foreach (var sat in Satellites.Take(MaxCount))
+            {
+                var currentSat = sat;
+                var heightPct = Math.Clamp(sat.SnrDb / 55.0 * 100.0, 8.0, 100.0);
+                var isHovered = _hoveredSat is not null
+                    && _hoveredSat.Talker == sat.Talker
+                    && _hoveredSat.Prn == sat.Prn;
+                <div class="ls-snr-col @(isHovered ? "is-hovered" : string.Empty)"
+                     @onmouseenter="() => _hoveredSat = currentSat">
+                    <span class="ls-snr-val">@sat.SnrDb.ToString("F0", CultureInfo.InvariantCulture)</span>
+                    <div class="ls-snr-track">
+                        <div class="ls-snr-fill @GetSatelliteColorClass(sat.Talker)"
+                             style="height: @(heightPct.ToString("F0", CultureInfo.InvariantCulture))%;"></div>
+                    </div>
+                    <span class="ls-snr-prn">@sat.Prn</span>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public IReadOnlyList<SatelliteSignal> Satellites { get; set; } = [];
+
+    [Parameter]
+    public int MaxCount { get; set; } = 16;
+
+    [Parameter]
+    public bool ShowCardChrome { get; set; } = true;
+
+    [Parameter]
+    public string Title { get; set; } = "可见卫星载噪比（SNR dB-Hz）";
+
+    private SatelliteSignal? _hoveredSat;
+
+    internal static string GetSatelliteColorClass(string talker) => talker switch
+    {
+        "GP" => "ls-sat-gp",
+        "BD" or "GB" => "ls-sat-bd",
+        "GL" => "ls-sat-gl",
+        _ => "ls-sat-other"
+    };
+
+    internal static string FormatSatelliteDetail(SatelliteSignal sat)
+    {
+        var constellation = sat.Talker switch
+        {
+            "GP" => "GPS",
+            "BD" or "GB" => "北斗",
+            "GL" => "GLONASS",
+            "GA" => "Galileo",
+            _ => sat.Talker
+        };
+
+        var detail = $"{constellation} #{sat.Prn} · {sat.SnrDb:F0} dB";
+        if (sat.Elevation.HasValue)
+        {
+            detail += $" · 仰角 {sat.Elevation.Value:F0}°";
+        }
+
+        if (sat.Azimuth.HasValue)
+        {
+            detail += $" · 方位 {sat.Azimuth.Value:F0}°";
+        }
+
+        return detail;
+    }
+}

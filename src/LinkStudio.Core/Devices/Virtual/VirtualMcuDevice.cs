@@ -35,6 +35,7 @@ namespace LinkStudio.Core.Devices.Virtual
         // 0/1 状态配合 Volatile 读写，让其他 Task 能及时看到最新状态。
         private int _isOpen;
         private int _disposeStarted;
+        private int _simulationMode = (int)VirtualMcuSimulationMode.BasicTick;
 
         public VirtualMcuDevice(IRawDataBus dataBus)
         {
@@ -73,6 +74,19 @@ namespace LinkStudio.Core.Devices.Virtual
         public ChannelKind Kind => ChannelKind.VirtualMcu;
 
         public bool IsOpen => Volatile.Read(ref _isOpen) == 1;
+
+        public VirtualMcuSimulationMode SimulationMode => (VirtualMcuSimulationMode)Volatile.Read(ref _simulationMode);
+
+        // 切换虚拟 MCU 自动发送的模拟数据格式（可在打开前或运行中随时切换）。
+        public Task SetSimulationModeAsync(VirtualMcuSimulationMode mode, CancellationToken ct = default)
+        {
+            ThrowIfDisposing();
+            ct.ThrowIfCancellationRequested();
+
+            var completion = CreateCompletion();
+            var command = new SetSimulationModeVirtualMcuCommand(mode, completion, ct);
+            return EnqueueAndWaitAsync(command, completion, ct);
+        }
 
         public Task OpenAsync(CancellationToken ct = default)
         {

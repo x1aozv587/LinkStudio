@@ -1,9 +1,16 @@
 // 工作台轻量交互脚本：智能自动滚屏、接收区局部 Ctrl+A、剪贴板复制、多行发送快捷键与设置页滚动联动。
 
-export function scrollToBottom(element) {
+export function scrollToBottom(element, force = false) {
     if (!element) {
         return;
     }
+
+    // 用户已经主动往上翻阅时，除非明确点击“回到底部”(force=true)，否则绝不抢拉滚动条。
+    if (!force && element.dataset.userScrolledUp === "true") {
+        return;
+    }
+
+    element.dataset.userScrolledUp = "false";
     element.scrollTop = element.scrollHeight;
 }
 
@@ -29,6 +36,8 @@ export function attachAutoScrollWatcher(element, dotNetRef) {
         // 距离底部 28px 以内视为贴底，避免亚像素舍入导致状态闪烁。
         const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
         const isNearBottom = distanceToBottom <= 28;
+        // 同步写入 DOM 属性，让同帧到达的 scrollToBottom 能立刻感知，避免跨线程异步竞态。
+        element.dataset.userScrolledUp = isNearBottom ? "false" : "true";
         if (isNearBottom !== lastNearBottom) {
             lastNearBottom = isNearBottom;
             dotNetRef.invokeMethodAsync("OnTerminalScrollPositionChanged", isNearBottom);
@@ -247,6 +256,190 @@ export function attachVerticalSplitter(handle, panel) {
             handle.removeEventListener("pointermove", onPointerMove);
             handle.removeEventListener("pointerup", stopDrag);
             handle.removeEventListener("pointercancel", stopDrag);
+        }
+    };
+}
+
+export function attachWaveRangeNavigator(track, dotNetRef) {
+    if (!track || !dotNetRef) {
+        return null;
+    }
+
+    const MIN_SPAN = 0.05;
+    let mode = null;
+    let originX = 0;
+    let originStart = 0;
+    let originEnd = 1;
+    let pendingRange = null;
+    let rafId = 0;
+
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
+    const flush = () => {
+        rafId = 0;
+        if (!pendingRange) {
+            return;
+        }
+        const [s, e] = pendingRange;
+        pendingRange = null;
+        dotNetRef.invokeMethodAsync("OnRangeChanged", s, e);
+    };
+
+    const emit = (s, e) => {
+        pendingRange = [s, e];
+        if (!rafId) {
+            rafId = requestAnimationFrame(flush);
+        }
+    };
+
+    const onPointerDown = (e) => {
+        if (e.button !== 0) {
+            return;
+        }
+
+        const rect = track.getBoundingClientRect();
+        if (rect.width <= 0) {
+            return;
+        }
+
+        originStart = parseFloat(track.dataset.start || "0");
+        originEnd = parseFloat(track.dataset.end || "1");
+        originX = e.clientX;
+
+        const targetMode = e.target?.closest?.("[data-drag-mode]")?.getAttribute("data-drag-mode");
+        if (targetMode === "left" || targetMode === "right" || targetMode === "move") {
+            mode = targetMode;
+        } else {
+            // 点击空白缩略图区域时，把当前窗口中心快速移动到点击处，并允许顺势拖动。
+            const clickRatio = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+            const span = Math.max(MIN_SPAN, originEnd - originStart);
+            const nextStart = clamp(clickRatio - span / 2, 0, 1 - span);
+            originStart = nextStart;
+            originEnd = nextStart + span;
+            mode = "move";
+            emit(originStart, originEnd);
+        }
+
+        track.setPointerCapture(e.pointerId);
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+    };
+
+    const onPointerMove = (e) => {
+        if (!mode) {
+            return;
+        }
+
+        const rect = track.getBoundingClientRect();
+        if (rect.width <= 0) {
+            return;
+        }
+
+        const dx = (e.clientX - originX) / rect.width;
+        let nextStart = originStart;
+        let nextEnd = originEnd;
+
+        if (mode === "move") {
+            const span = originEnd - originStart;
+            nextStart = clamp(originStart + dx, 0, 1 - span);
+            nextEnd = nextStart + span;
+        } else if (mode === "left") {
+            nextStart = clamp(originStart + dx, 0, originEnd - MIN_SPAN);
+        } else if (mode === "right") {
+            nextEnd = clamp(originEnd + dx, originStart + MIN_SPAN, 1);
+        }
+
+        emit(nextStart, nextEnd);
+    };
+
+    const stopDrag = (e) => {
+        if (!mode) {
+            return;
+        }
+
+        mode = null;
+        if (track.hasPointerCapture(e.pointerId)) {
+            track.releasePointerCapture(e.pointerId);
+        }
+        document.body.style.userSelect = "";
+    };
+
+    track.addEventListener("pointerdown", onPointerDown);
+    track.addEventListener("pointermove", onPointerMove);
+    track.addEventListener("pointerup", stopDrag);
+    track.addEventListener("pointercancel", stopDrag);
+
+    return {
+        dispose() {
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = 0;
+            }
+            track.removeEventListener("pointerdown", onPointerDown);
+            track.removeEventListener("pointermove", onPointerMove);
+            track.removeEventListener("pointerup", stopDrag);
+            track.removeEventListener("pointercancel", stopDrag);
+        }
+    };
+}
+
+export function attachWaveHoverTracker(svg, dotNetRef) {
+    if (!svg || !dotNetRef) {
+        return null;
+    }
+
+    let rafId = 0;
+    let pendingPoint = null;
+
+    const flush = () => {
+        rafId = 0;
+        if (!pendingPoint) {
+            return;
+        }
+        const pt = pendingPoint;
+        pendingPoint = null;
+        if (pt.leave) {
+            dotNetRef.invokeMethodAsync("OnSvgHoverLeave");
+        } else {
+            dotNetRef.invokeMethodAsync("OnSvgHoverMove", pt.x, pt.y);
+        }
+    };
+
+    const onPointerMove = (e) => {
+        const ctm = svg.getScreenCTM();
+        if (!ctm) {
+            return;
+        }
+
+        // 用 SVG 逆矩阵把屏幕像素精确映射到 viewBox 坐标，任意窗口缩放比例下都零误差。
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        const local = pt.matrixTransform(ctm.inverse());
+        pendingPoint = { leave: false, x: local.x, y: local.y };
+        if (!rafId) {
+            rafId = requestAnimationFrame(flush);
+        }
+    };
+
+    const onPointerLeave = () => {
+        pendingPoint = { leave: true };
+        if (!rafId) {
+            rafId = requestAnimationFrame(flush);
+        }
+    };
+
+    svg.addEventListener("pointermove", onPointerMove);
+    svg.addEventListener("pointerleave", onPointerLeave);
+
+    return {
+        dispose() {
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = 0;
+            }
+            svg.removeEventListener("pointermove", onPointerMove);
+            svg.removeEventListener("pointerleave", onPointerLeave);
         }
     };
 }

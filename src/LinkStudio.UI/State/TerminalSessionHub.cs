@@ -28,6 +28,19 @@ namespace LinkStudio.UI.State
         double? Azimuth,
         long LastUpdatedMs);
 
+    public readonly record struct NumericSample(long TimestampMs, double Value);
+
+    public sealed record NumericSeriesSnapshot(
+        string Key,
+        string ProtocolName,
+        string? Unit,
+        double Latest,
+        double Min,
+        double Max,
+        double Avg,
+        int SampleCount,
+        IReadOnlyList<NumericSample> Samples);
+
     public sealed class GnssSummarySnapshot
     {
         public bool HasData { get; init; }
@@ -72,6 +85,7 @@ namespace LinkStudio.UI.State
         private IReadOnlyList<CompiledFilterRule> _compiledRules = [];
         private readonly List<ParsedFrame> _parsedFrames = [];
         private readonly Dictionary<string, LiveFieldState> _liveFields = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, NumericSeriesBuffer> _numericSeries = new(StringComparer.Ordinal);
         private readonly Dictionary<string, SatelliteSignal> _satellites = new(StringComparer.Ordinal);
         private readonly List<string> _chipNotes = [];
         private string? _antennaAlert;
@@ -80,6 +94,13 @@ namespace LinkStudio.UI.State
         private ProtocolFilterMode _protocolFilter = ProtocolFilterMode.Auto;
         private ICommunicationDevice? _activeDevice;
         private long _nextEntryId;
+
+        // 可视化页面的会话级记忆状态：切换主导航页（终端 / 协议 / 可视化）后保留用户已选字段与缩放区间。
+        private readonly List<string> _dashboardPinnedKeys = [];
+        private readonly HashSet<string> _dashboardHiddenKeys = new(StringComparer.Ordinal);
+        private int _dashboardActiveTab;
+        private double _waveViewStart = 0.0;
+        private double _waveViewEnd = 1.0;
 
         public event Action? EntriesChanged;
         public event Action? RulesChanged;
@@ -153,6 +174,19 @@ namespace LinkStudio.UI.State
                             field.Kind,
                             count,
                             frame.TimestampMs);
+
+                        if (field.Kind == ParsedFieldKind.Number
+                            && field.NumberValue is double numericValue
+                            && double.IsFinite(numericValue))
+                        {
+                            if (!_numericSeries.TryGetValue(field.Key, out var buffer))
+                            {
+                                buffer = new NumericSeriesBuffer(field.Key, frame.ProtocolName, field.Unit);
+                                _numericSeries[field.Key] = buffer;
+                            }
+
+                            buffer.Add(frame.TimestampMs, numericValue, frame.ProtocolName, field.Unit);
+                        }
                     }
 
                     if (frame.ProtocolName == "NMEA-0183")
@@ -171,6 +205,7 @@ namespace LinkStudio.UI.State
             {
                 _parsedFrames.Clear();
                 _liveFields.Clear();
+                _numericSeries.Clear();
                 _satellites.Clear();
                 _chipNotes.Clear();
                 _antennaAlert = null;
@@ -201,6 +236,41 @@ namespace LinkStudio.UI.State
                     .Where(f => MatchesProtocolFilter(f.ProtocolName, _protocolFilter))
                     .Reverse()
                     .ToArray();
+            }
+        }
+
+        public IReadOnlyList<string> GetNumericFieldKeysSnapshot()
+        {
+            lock (_gate)
+            {
+                return _numericSeries.Keys
+                    .OrderBy(k => k, StringComparer.Ordinal)
+                    .ToArray();
+            }
+        }
+
+        public IReadOnlyList<NumericSeriesSnapshot> GetNumericSeriesSnapshot(IEnumerable<string>? keys = null)
+        {
+            lock (_gate)
+            {
+                if (keys is null)
+                {
+                    return _numericSeries.Values
+                        .OrderBy(b => b.Key, StringComparer.Ordinal)
+                        .Select(b => b.ToSnapshot())
+                        .ToArray();
+                }
+
+                var result = new List<NumericSeriesSnapshot>();
+                foreach (var key in keys)
+                {
+                    if (_numericSeries.TryGetValue(key, out var buffer))
+                    {
+                        result.Add(buffer.ToSnapshot());
+                    }
+                }
+
+                return result;
             }
         }
 
@@ -354,12 +424,15 @@ namespace LinkStudio.UI.State
             }
         }
 
-        public void AddEntry(TerminalLogEntry entry, int maxDisplayLines)
+        public void AddEntry(TerminalLogEntry entry, int maxDisplayLines, bool preserveTop = false)
         {
             lock (_gate)
             {
                 _entries.Add(entry);
-                var limit = Math.Max(maxDisplayLines, 50);
+                // 用户向上翻阅历史时暂停顶部裁剪（保留至多 5000 行安全上限），防止正在阅读的内容被顶走。
+                var limit = preserveTop
+                    ? Math.Max(maxDisplayLines, 5000)
+                    : Math.Max(maxDisplayLines, 50);
                 if (_entries.Count > limit)
                 {
                     _entries.RemoveRange(0, _entries.Count - limit);
@@ -497,9 +570,152 @@ namespace LinkStudio.UI.State
             return string.Join(" ", parts);
         }
 
+        public int DashboardActiveTab
+        {
+            get { lock (_gate) { return _dashboardActiveTab; } }
+            set { lock (_gate) { _dashboardActiveTab = value; } }
+        }
+
+        public (double Start, double End) GetWaveViewRange()
+        {
+            lock (_gate)
+            {
+                return (_waveViewStart, _waveViewEnd);
+            }
+        }
+
+        public void SetWaveViewRange(double start, double end)
+        {
+            lock (_gate)
+            {
+                _waveViewStart = Math.Clamp(start, 0.0, 0.95);
+                _waveViewEnd = Math.Clamp(end, _waveViewStart + 0.05, 1.0);
+            }
+        }
+
+        public IReadOnlyList<string> GetDashboardPinnedKeys()
+        {
+            lock (_gate)
+            {
+                return _dashboardPinnedKeys.ToArray();
+            }
+        }
+
+        public IReadOnlySet<string> GetDashboardHiddenKeys()
+        {
+            lock (_gate)
+            {
+                return new HashSet<string>(_dashboardHiddenKeys, StringComparer.Ordinal);
+            }
+        }
+
+        public void AddDashboardPinnedKey(string key)
+        {
+            var trimmed = key.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                if (!_dashboardPinnedKeys.Contains(trimmed, StringComparer.Ordinal))
+                {
+                    _dashboardPinnedKeys.Add(trimmed);
+                }
+
+                _dashboardHiddenKeys.Remove(trimmed);
+            }
+        }
+
+        public void RemoveDashboardPinnedKey(string key)
+        {
+            lock (_gate)
+            {
+                _dashboardPinnedKeys.Remove(key);
+                _dashboardHiddenKeys.Remove(key);
+            }
+        }
+
+        public void ToggleDashboardKeyVisibility(string key)
+        {
+            lock (_gate)
+            {
+                if (!_dashboardHiddenKeys.Add(key))
+                {
+                    _dashboardHiddenKeys.Remove(key);
+                }
+            }
+        }
+
         private void RebuildCompiledRulesUnsafe()
         {
             _compiledRules = TerminalFilterEngine.CompileEnabledRules(_rules);
+        }
+
+        private sealed class NumericSeriesBuffer
+        {
+            // 保留最近 2000 个采样点供波形图缩略图预览与历史回看，避免长时间运行内存无限增长。
+            private const int MaxSamples = 2000;
+            private readonly Queue<NumericSample> _samples = new(256);
+
+            public NumericSeriesBuffer(string key, string protocolName, string? unit)
+            {
+                Key = key;
+                ProtocolName = protocolName;
+                Unit = unit;
+            }
+
+            public string Key { get; }
+            public string ProtocolName { get; private set; }
+            public string? Unit { get; private set; }
+
+            public void Add(long timestampMs, double value, string protocolName, string? unit)
+            {
+                ProtocolName = protocolName;
+                if (!string.IsNullOrEmpty(unit))
+                {
+                    Unit = unit;
+                }
+
+                if (_samples.Count >= MaxSamples)
+                {
+                    _samples.Dequeue();
+                }
+
+                _samples.Enqueue(new NumericSample(timestampMs, value));
+            }
+
+            public NumericSeriesSnapshot ToSnapshot()
+            {
+                var arr = _samples.ToArray();
+                if (arr.Length == 0)
+                {
+                    return new NumericSeriesSnapshot(Key, ProtocolName, Unit, 0, 0, 0, 0, 0, arr);
+                }
+
+                var min = double.PositiveInfinity;
+                var max = double.NegativeInfinity;
+                var sum = 0.0;
+                for (var i = 0; i < arr.Length; i++)
+                {
+                    var v = arr[i].Value;
+                    if (v < min) min = v;
+                    if (v > max) max = v;
+                    sum += v;
+                }
+
+                return new NumericSeriesSnapshot(
+                    Key,
+                    ProtocolName,
+                    Unit,
+                    arr[^1].Value,
+                    min,
+                    max,
+                    sum / arr.Length,
+                    arr.Length,
+                    arr);
+            }
         }
     }
 }

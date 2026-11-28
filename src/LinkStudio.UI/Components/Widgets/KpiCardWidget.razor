@@ -1,0 +1,98 @@
+@using System.Globalization
+@using System.Text
+
+<article class="ls-kpi-card" style="--ls-kpi-accent: @AccentColor;">
+    <div class="ls-kpi-top">
+        <span class="ls-kpi-dot"></span>
+        <span class="ls-kpi-key ls-mono" title="@Series.Key">@(Label ?? Series.Key)</span>
+    </div>
+
+    <div class="ls-kpi-main">
+        <div class="ls-kpi-value-wrap ls-mono">
+            <span class="ls-kpi-value">@FormatNumber(Series.Latest)</span>
+            @if (!string.IsNullOrEmpty(Series.Unit))
+            {
+                <span class="ls-kpi-unit">@Series.Unit</span>
+            }
+        </div>
+
+        <svg class="ls-kpi-spark" viewBox="0 0 110 30" preserveAspectRatio="none" aria-hidden="true">
+            @{
+                var points = BuildSparklinePoints(Series.Samples);
+            }
+            @if (!string.IsNullOrEmpty(points))
+            {
+                <polyline fill="none"
+                          stroke="@AccentColor"
+                          stroke-width="1.8"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          points="@points" />
+            }
+        </svg>
+    </div>
+
+    <div class="ls-kpi-foot ls-mono">
+        <span>@FormatNumber(Series.Min) – @FormatNumber(Series.Max)</span>
+        <span>均值 @FormatNumber(Series.Avg)</span>
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public NumericSeriesSnapshot Series { get; set; } = default!;
+
+    [Parameter]
+    public string AccentColor { get; set; } = "#3B82F6";
+
+    [Parameter]
+    public string? Label { get; set; }
+
+    private static string FormatNumber(double value)
+    {
+        var abs = Math.Abs(value);
+        if (abs >= 1000) return value.ToString("F1", CultureInfo.InvariantCulture);
+        if (abs >= 10) return value.ToString("F2", CultureInfo.InvariantCulture);
+        return value.ToString("F3", CultureInfo.InvariantCulture);
+    }
+
+    private static string BuildSparklinePoints(IReadOnlyList<NumericSample> samples)
+    {
+        if (samples.Count < 2)
+        {
+            return string.Empty;
+        }
+
+        // 只取最近 60 个点画迷你折线，保持卡片清爽且渲染极快。
+        var start = Math.Max(0, samples.Count - 60);
+        var count = samples.Count - start;
+        var min = double.PositiveInfinity;
+        var max = double.NegativeInfinity;
+        for (var i = start; i < samples.Count; i++)
+        {
+            var v = samples[i].Value;
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+
+        var span = max - min;
+        if (span < 1e-9)
+        {
+            span = 1.0;
+        }
+
+        var sb = new StringBuilder(count * 12);
+        for (var i = 0; i < count; i++)
+        {
+            var x = i * (106.0 / (count - 1)) + 2.0;
+            var norm = (samples[start + i].Value - min) / span;
+            var y = 27.0 - norm * 23.0;
+            if (i > 0) sb.Append(' ');
+            sb.Append(x.ToString("F1", CultureInfo.InvariantCulture));
+            sb.Append(',');
+            sb.Append(y.ToString("F1", CultureInfo.InvariantCulture));
+        }
+
+        return sb.ToString();
+    }
+}

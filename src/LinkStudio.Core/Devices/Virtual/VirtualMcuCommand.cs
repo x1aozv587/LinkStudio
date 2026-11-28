@@ -41,4 +41,12 @@
     /// </summary>
     internal sealed record AutoVirtualMcuCommand
         ( bool enabled, UInt32 intervalMS, CancellationToken CancellationToken, TaskCompletionSource Completion) : VirtualMcuCommand;
+
+    /// <summary>
+    /// 切换虚拟 MCU 的定时数据模拟模式（基础心跳 / 模拟 IMU JSON / 模拟 GNSS NMEA）。
+    /// </summary>
+    internal sealed record SetSimulationModeVirtualMcuCommand(
+        VirtualMcuSimulationMode Mode,
+        TaskCompletionSource Completion,
+        CancellationToken CancellationToken) : VirtualMcuCommand;
 }

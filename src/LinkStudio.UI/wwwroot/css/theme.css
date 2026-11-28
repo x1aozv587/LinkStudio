@@ -2551,3 +2551,697 @@ input[type="number"] {
 .ls-snr-col.is-hovered {
     background: var(--ls-bg-hover);
 }
+
+/* ==================== V0.4 可视化仪表盘与复用组件 ==================== */
+
+.ls-sim-select {
+    min-width: 158px;
+}
+
+.ls-sim-select .ls-select-menu {
+    left: 0;
+    right: auto;
+    width: 176px;
+}
+
+.ls-dashboard-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    background: var(--ls-bg-canvas);
+}
+
+.ls-tab-count {
+    margin-left: 5px;
+    padding: 0 5px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    background: var(--ls-accent-soft);
+    color: var(--ls-accent);
+}
+
+.ls-dashboard-body {
+    flex: 1;
+    min-height: 0;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow: hidden;
+}
+
+.ls-widget-card {
+    padding: 16px 18px;
+    border-radius: 12px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border);
+    box-shadow: var(--ls-shadow-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+.ls-snr-widget-bare {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    height: 100%;
+}
+
+.ls-widget-title-sm {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ls-text-primary);
+}
+
+/* 顶部 KPI 缩略卡条：固定紧凑小格 + 单行横向滚动，不占满也不挤压下方波形 */
+.ls-kpi-strip {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+    flex-shrink: 0;
+}
+
+.ls-kpi-card {
+    flex: 0 0 196px;
+    width: 196px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border);
+    box-shadow: var(--ls-shadow-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ls-kpi-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ls-kpi-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ls-kpi-accent, var(--ls-accent));
+    flex-shrink: 0;
+}
+
+.ls-kpi-key {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ls-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ls-kpi-main {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.ls-kpi-value-wrap {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 3px;
+    min-width: 0;
+}
+
+.ls-kpi-value {
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--ls-text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.ls-kpi-unit {
+    font-size: 10.5px;
+    color: var(--ls-text-muted);
+}
+
+.ls-kpi-spark {
+    width: 62px;
+    height: 22px;
+    flex-shrink: 0;
+}
+
+.ls-kpi-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: var(--ls-text-muted);
+}
+
+/* 实时波形图组件：拉满剩余视口高度 */
+.ls-wave-fill {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+.ls-wave-widget {
+    flex: 1;
+    min-height: 0;
+}
+
+.ls-wave-head {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.ls-field-adder {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-field-input-wrap {
+    position: relative;
+    flex: 1;
+    max-width: 380px;
+}
+
+.ls-field-add-input {
+    width: 100%;
+    height: 32px;
+    font-size: 12.5px;
+}
+
+.ls-field-suggest-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--ls-border-strong);
+    border-radius: 10px;
+    background: var(--ls-bg-surface);
+    box-shadow: var(--ls-shadow-md);
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.ls-suggest-val {
+    font-size: 11.5px;
+    color: var(--ls-text-muted);
+}
+
+.ls-wave-channels {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-channel-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    border-radius: 999px;
+    border: 1px solid var(--ls-border);
+    background: transparent;
+    color: var(--ls-text-muted);
+    font-family: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.ls-channel-chip.is-active {
+    background: var(--ls-bg-canvas);
+    border-color: var(--ls-border-strong);
+    color: var(--ls-text-primary);
+}
+
+.ls-channel-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    padding: 0 8px 0 11px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+}
+
+.ls-channel-remove {
+    height: 100%;
+    width: 24px;
+    border: none;
+    border-left: 1px solid var(--ls-border);
+    background: transparent;
+    color: var(--ls-text-muted);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.ls-channel-remove:hover {
+    background: var(--ls-danger-soft);
+    color: var(--ls-danger-text);
+}
+
+.ls-channel-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.ls-channel-val {
+    font-weight: 700;
+    color: var(--ls-text-primary);
+    padding-left: 6px;
+    border-left: 1px solid var(--ls-border);
+}
+
+.ls-channel-pending {
+    font-size: 11px;
+    color: var(--ls-text-muted);
+    padding-left: 6px;
+    border-left: 1px solid var(--ls-border);
+}
+
+.ls-quick-add-row {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+}
+
+.ls-quick-add-btn {
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px dashed var(--ls-border-strong);
+    background: var(--ls-bg-surface);
+    color: var(--ls-text-secondary);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.ls-quick-add-btn:hover {
+    border-color: var(--ls-accent);
+    color: var(--ls-accent);
+    background: var(--ls-accent-soft);
+}
+
+.ls-wave-stage {
+    position: relative;
+    flex: 1;
+    min-height: 220px;
+    border-radius: 10px;
+    background: var(--ls-bg-canvas);
+    border: 1px solid var(--ls-border);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ls-wave-main-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ls-wave-nav-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.ls-wave-minimap {
+    position: relative;
+    height: 44px;
+    border-radius: 8px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border);
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.ls-wave-minimap-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+}
+
+.ls-wave-curtain {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.14);
+    pointer-events: none;
+}
+
+.ls-wave-curtain-left { left: 0; }
+.ls-wave-curtain-right { right: 0; }
+
+.ls-wave-range-window {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--ls-accent-soft);
+    border-top: 2px solid var(--ls-accent);
+    border-bottom: 2px solid var(--ls-accent);
+    cursor: grab;
+    box-sizing: border-box;
+}
+
+.ls-wave-range-window:active {
+    cursor: grabbing;
+}
+
+.ls-wave-range-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 10px;
+    cursor: ew-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ls-wave-range-handle::after {
+    content: '';
+    width: 3px;
+    height: 18px;
+    border-radius: 999px;
+    background: var(--ls-accent);
+}
+
+.ls-wave-range-handle-l { left: -5px; }
+.ls-wave-range-handle-r { right: -5px; }
+
+.ls-wave-nav-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--ls-text-muted);
+    padding: 0 2px;
+}
+
+.ls-wave-nav-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-nav-tip {
+    color: var(--ls-text-muted);
+}
+
+.ls-link-btn {
+    border: none;
+    background: transparent;
+    color: var(--ls-accent);
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.ls-link-btn:hover {
+    text-decoration: underline;
+}
+
+.ls-wave-hover-bar {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    z-index: 5;
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border-strong);
+    box-shadow: var(--ls-shadow-sm);
+    font-size: 11.5px;
+    pointer-events: none;
+}
+
+.ls-wave-hover-time {
+    color: var(--ls-text-muted);
+    padding-right: 8px;
+    border-right: 1px solid var(--ls-border);
+}
+
+.ls-wave-hover-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--ls-text-secondary);
+}
+
+.ls-wave-hover-item strong {
+    color: var(--ls-text-primary);
+    font-weight: 700;
+}
+
+.ls-wave-crosshair {
+    stroke: var(--ls-accent);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.72;
+    pointer-events: none;
+}
+
+.ls-wave-svg-tip {
+    pointer-events: none;
+}
+
+.ls-wave-tip-bg {
+    fill: var(--ls-bg-surface);
+    stroke: var(--ls-border-strong);
+    stroke-width: 1;
+    opacity: 0.96;
+}
+
+.ls-wave-tip-time {
+    font-size: 10px;
+    fill: var(--ls-text-muted);
+}
+
+.ls-wave-tip-key {
+    font-size: 10.5px;
+    fill: var(--ls-text-secondary);
+}
+
+.ls-wave-tip-key.is-focus {
+    fill: var(--ls-text-primary);
+    font-weight: 700;
+}
+
+.ls-wave-tip-val {
+    font-size: 10.5px;
+    fill: var(--ls-text-secondary);
+}
+
+.ls-wave-tip-val.is-focus {
+    fill: var(--ls-text-primary);
+    font-weight: 700;
+}
+
+.ls-wave-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 20px;
+}
+
+.ls-wave-svg {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    display: block;
+}
+
+.ls-wave-grid {
+    stroke: var(--ls-border);
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+}
+
+.ls-wave-zero-line {
+    stroke: var(--ls-border-strong);
+    stroke-width: 1.2;
+}
+
+.ls-wave-axis-label {
+    font-size: 11px;
+    fill: var(--ls-text-muted);
+}
+
+/* GNSS 视图：精简摘要条 + 左右整屏双卡 */
+.ls-gnss-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 20px;
+    padding: 11px 18px;
+    border-radius: 12px;
+    background: var(--ls-bg-surface);
+    border: 1px solid var(--ls-border);
+    box-shadow: var(--ls-shadow-sm);
+    flex-shrink: 0;
+}
+
+.ls-gnss-strip-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-gnss-strip-val {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ls-text-primary);
+}
+
+.ls-gnss-fill {
+    flex: 1;
+    min-height: 0;
+}
+
+.ls-gnss-visual-grid {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+    gap: 14px;
+}
+
+.ls-skyplot-widget,
+.ls-snr-widget {
+    min-height: 0;
+}
+
+.ls-skyplot-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.ls-skyplot-svg {
+    width: min(330px, 100%);
+    height: min(330px, 100%);
+    display: block;
+}
+
+.ls-sky-ring {
+    fill: none;
+    stroke: var(--ls-border);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+}
+
+.ls-sky-ring-outer {
+    fill: var(--ls-bg-canvas);
+    stroke: var(--ls-border-strong);
+    stroke-dasharray: none;
+}
+
+.ls-sky-center {
+    fill: var(--ls-text-muted);
+}
+
+.ls-sky-axis {
+    stroke: var(--ls-border);
+    stroke-width: 1;
+}
+
+.ls-sky-axis-diag {
+    stroke: var(--ls-border);
+    stroke-width: 0.8;
+    stroke-dasharray: 2 4;
+    opacity: 0.7;
+}
+
+.ls-sky-cardinal {
+    font-size: 11px;
+    font-weight: 700;
+    fill: var(--ls-text-secondary);
+}
+
+.ls-sky-elev-label {
+    font-size: 9.5px;
+    fill: var(--ls-text-muted);
+}
+
+.ls-sky-sat {
+    cursor: default;
+}
+
+.ls-sky-prn {
+    font-size: 8.5px;
+    font-weight: 700;
+    fill: #ffffff;
+    pointer-events: none;
+}
+
+.ls-skyplot-caption {
+    font-size: 12px;
+    color: var(--ls-text-muted);
+    text-align: center;
+}
+
+.ls-snr-widget .ls-snr-bars {
+    flex: 1;
+    min-height: 220px;
+    align-items: flex-end;
+    padding: 14px 16px 10px;
+    gap: 12px;
+}
+
+.ls-snr-widget .ls-snr-track {
+    width: 18px;
+    height: 190px;
+}

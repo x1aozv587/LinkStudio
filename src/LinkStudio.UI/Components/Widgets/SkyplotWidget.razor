@@ -1,0 +1,108 @@
+@using System.Globalization
+
+<section class="@(ShowCardChrome ? "ls-widget-card ls-skyplot-widget" : "ls-skyplot-widget-bare")" aria-label="GNSS 卫星天空图">
+    <div class="ls-gnss-snr-head">
+        @if (_hoveredSat is not null)
+        {
+            <span class="ls-snr-hover-pill ls-mono">
+                <i class="ls-sat-dot @SatelliteSnrWidget.GetSatelliteColorClass(_hoveredSat.Talker)"></i>
+                @SatelliteSnrWidget.FormatSatelliteDetail(_hoveredSat)
+            </span>
+        }
+        else
+        {
+            <span class="ls-widget-title-sm">GNSS 卫星天空图（Skyplot）</span>
+        }
+
+        <span class="ls-inline-label ls-mono">@PlottedSatellites.Count / @Satellites.Count 颗有仰角</span>
+    </div>
+
+    <div class="ls-skyplot-stage">
+        <svg class="ls-skyplot-svg" viewBox="0 0 260 260" role="img" aria-label="卫星极坐标雷达图"
+             @onmouseleave="() => _hoveredSat = null">
+            <!-- 极坐标同心仰角圈（0° 地平线 / 30° / 60°） -->
+            <circle cx="130" cy="130" r="100" class="ls-sky-ring ls-sky-ring-outer" />
+            <circle cx="130" cy="130" r="66.7" class="ls-sky-ring" />
+            <circle cx="130" cy="130" r="33.3" class="ls-sky-ring" />
+            <circle cx="130" cy="130" r="2" class="ls-sky-center" />
+
+            <!-- 十字方位轴与 45° 辅助线 -->
+            <line x1="130" y1="30" x2="130" y2="230" class="ls-sky-axis" />
+            <line x1="30" y1="130" x2="230" y2="130" class="ls-sky-axis" />
+            <line x1="59.3" y1="59.3" x2="200.7" y2="200.7" class="ls-sky-axis-diag" />
+            <line x1="200.7" y1="59.3" x2="59.3" y2="200.7" class="ls-sky-axis-diag" />
+
+            <!-- 方位标记 N / E / S / W 与仰角刻度 -->
+            <text x="130" y="20" text-anchor="middle" class="ls-sky-cardinal">N</text>
+            <text x="242" y="134" text-anchor="middle" class="ls-sky-cardinal">E</text>
+            <text x="130" y="248" text-anchor="middle" class="ls-sky-cardinal">S</text>
+            <text x="18" y="134" text-anchor="middle" class="ls-sky-cardinal">W</text>
+
+            <text x="134" y="62" class="ls-sky-elev-label ls-mono">60°</text>
+            <text x="134" y="96" class="ls-sky-elev-label ls-mono">30°</text>
+
+            <!-- 卫星散点 -->
+            @foreach (var sat in PlottedSatellites)
+            {
+                var currentSat = sat;
+                var pos = Project(sat.Elevation!.Value, sat.Azimuth!.Value);
+                var radius = Math.Clamp(6.5 + (sat.SnrDb - 20.0) * 0.12, 6.0, 10.5);
+                var color = GetSatelliteHexColor(sat.Talker);
+                var isHovered = _hoveredSat is not null
+                    && _hoveredSat.Talker == sat.Talker
+                    && _hoveredSat.Prn == sat.Prn;
+
+                <g class="ls-sky-sat @(isHovered ? "is-hovered" : string.Empty)"
+                   @onmouseenter="() => _hoveredSat = currentSat">
+                    @if (isHovered)
+                    {
+                        <circle cx="@F(pos.X)" cy="@F(pos.Y)" r="@F(radius + 4.5)" fill="@color" opacity="0.22" />
+                    }
+                    <circle cx="@F(pos.X)" cy="@F(pos.Y)" r="@F(radius)" fill="@color" stroke="var(--ls-bg-surface)" stroke-width="1.5" />
+                    <text x="@F(pos.X)" y="@F(pos.Y + 3.2)" text-anchor="middle" class="ls-sky-prn ls-mono">@sat.Prn</text>
+                </g>
+            }
+        </svg>
+
+        @if (Satellites.Count == 0)
+        {
+            <div class="ls-skyplot-caption">等待 GNSS GSV 语句（可在虚拟 MCU 中切换「模拟 GNSS」体验）</div>
+        }
+        else if (PlottedSatellites.Count == 0)
+        {
+            <div class="ls-skyplot-caption">已收到 @Satellites.Count 颗卫星信号，等待模块输出仰角与方位角</div>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter]
+    public IReadOnlyList<SatelliteSignal> Satellites { get; set; } = [];
+
+    [Parameter]
+    public bool ShowCardChrome { get; set; } = true;
+
+    private SatelliteSignal? _hoveredSat;
+
+    private IReadOnlyList<SatelliteSignal> PlottedSatellites =>
+        Satellites.Where(s => s.Elevation.HasValue && s.Azimuth.HasValue).ToArray();
+
+    private static (double X, double Y) Project(double elevationDeg, double azimuthDeg)
+    {
+        // 仰角 90° 在圆心（天顶），0° 在外圈（地平线）；方位角 0° 为正北顺时针。
+        var clampedElev = Math.Clamp(elevationDeg, 0.0, 90.0);
+        var r = 100.0 * (1.0 - clampedElev / 90.0);
+        var rad = (azimuthDeg - 90.0) * Math.PI / 180.0;
+        return (130.0 + r * Math.Cos(rad), 130.0 + r * Math.Sin(rad));
+    }
+
+    private static string GetSatelliteHexColor(string talker) => talker switch
+    {
+        "GP" => "#3B82F6",
+        "BD" or "GB" => "#10B981",
+        "GL" => "#F59E0B",
+        _ => "#8B5CF6"
+    };
+
+    private static string F(double value) => value.ToString("F1", CultureInfo.InvariantCulture);
+}

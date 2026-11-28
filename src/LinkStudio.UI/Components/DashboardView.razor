@@ -1,0 +1,275 @@
+@implements IDisposable
+
+<div class="ls-dashboard-page">
+    <!-- 顶部栏：极简连接态 + 视图场景切换 + 全局暂停/清空 -->
+    <header class="ls-topbar">
+        <div class="ls-topbar-group">
+            <span class="ls-status-pill @(SessionHub.IsDeviceOpen ? "is-connected" : string.Empty)">
+                <span class="ls-status-pill-dot"></span>
+                @(SessionHub.IsDeviceOpen ? SessionHub.ActiveDeviceName : "未连接")
+            </span>
+
+            <div class="ls-segmented" role="group" aria-label="可视化视图切换">
+                <button type="button"
+                        class="ls-seg-btn @(_activeTab == DashboardTab.Telemetry ? "is-active" : string.Empty)"
+                        @onclick="() => SwitchTab(DashboardTab.Telemetry)">
+                    遥测波形
+                </button>
+                <button type="button"
+                        class="ls-seg-btn @(_activeTab == DashboardTab.Gnss ? "is-active" : string.Empty)"
+                        @onclick="() => SwitchTab(DashboardTab.Gnss)">
+                    GNSS 卫星
+                    @if (_gnss.Satellites.Count > 0)
+                    {
+                        <span class="ls-tab-count ls-mono">@_gnss.Satellites.Count</span>
+                    }
+                </button>
+            </div>
+        </div>
+
+        <div class="ls-topbar-group ls-topbar-right">
+            <button type="button"
+                    class="ls-btn-subtle @(_isPaused ? "is-accent" : string.Empty)"
+                    @onclick="TogglePause">
+                @(_isPaused ? "继续" : "暂停")
+            </button>
+
+            <button type="button"
+                    class="ls-btn-subtle"
+                    disabled="@(_allSeries.Count == 0 && _gnss.Satellites.Count == 0)"
+                    @onclick="ClearAllData">
+                清空数据
+            </button>
+        </div>
+    </header>
+
+    <div class="ls-dashboard-body">
+        @if (_activeTab == DashboardTab.Telemetry)
+        {
+            <!-- 视图 1：紧凑单行可横向滚动的 KPI 缩略卡 + 整屏波形图 -->
+            var kpiItems = GetPinnedKpiItems();
+            @if (kpiItems.Count > 0)
+            {
+                <section class="ls-kpi-strip" aria-label="已监控字段指标">
+                    @foreach (var item in kpiItems)
+                    {
+                        <KpiCardWidget Series="item.Series" AccentColor="@item.Color" />
+                    }
+                </section>
+            }
+
+            <div class="ls-wave-fill">
+                <WaveformChartWidget AllSeries="_allSeries"
+                                     PinnedKeys="_pinnedKeys"
+                                     HiddenKeys="_hiddenKeys"
+                                     ViewStart="_viewStart"
+                                     ViewEnd="_viewEnd"
+                                     OnViewRangeChanged="OnViewRangeChanged"
+                                     OnAddKey="AddPinnedKey"
+                                     OnRemoveKey="RemovePinnedKey"
+                                     OnToggleVisibility="ToggleKeyVisibility" />
+            </div>
+        }
+        else
+        {
+            <!-- 视图 2：专注 GNSS 卫星天空图与载噪比 -->
+            <section class="ls-gnss-strip ls-mono" aria-label="GNSS 定位摘要">
+                <div class="ls-gnss-strip-item">
+                    <span class="ls-fix-badge @(IsFixed ? "is-fixed" : string.Empty)">@GetFixLabel()</span>
+                </div>
+                <div class="ls-gnss-strip-item">
+                    <span class="ls-metric-label">经纬度</span>
+                    <span class="ls-gnss-strip-val">
+                        @(_gnss.Latitude.HasValue && _gnss.Longitude.HasValue
+                            ? $"{_gnss.Latitude.Value:F5}°, {_gnss.Longitude.Value:F5}°"
+                            : "--")
+                    </span>
+                </div>
+                <div class="ls-gnss-strip-item">
+                    <span class="ls-metric-label">海拔 / 速度</span>
+                    <span class="ls-gnss-strip-val">
+                        @(_gnss.AltitudeM.HasValue ? $"{_gnss.AltitudeM.Value:F1} m" : "--")
+                        ·
+                        @(_gnss.SpeedKmh.HasValue ? $"{_gnss.SpeedKmh.Value:F1} km/h" : "--")
+                    </span>
+                </div>
+                <div class="ls-gnss-strip-item">
+                    <span class="ls-metric-label">定位星 / HDOP</span>
+                    <span class="ls-gnss-strip-val">
+                        @(_gnss.SatellitesUsed?.ToString() ?? "--") 颗 ·
+                        @(_gnss.Hdop.HasValue ? _gnss.Hdop.Value.ToString("F2") : "--")
+                    </span>
+                </div>
+            </section>
+
+            <div class="ls-gnss-visual-grid ls-gnss-fill">
+                <SkyplotWidget Satellites="_gnss.Satellites" />
+                <SatelliteSnrWidget Satellites="_gnss.Satellites" Title="卫星载噪比（SNR dB-Hz）" />
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private enum DashboardTab
+    {
+        Telemetry = 0,
+        Gnss = 1
+    }
+
+    [Inject]
+    private TerminalSessionHub SessionHub { get; set; } = default!;
+
+    private DashboardTab _activeTab = DashboardTab.Telemetry;
+    private IReadOnlyList<NumericSeriesSnapshot> _allSeries = [];
+    private GnssSummarySnapshot _gnss = new();
+    private IReadOnlyList<string> _pinnedKeys = [];
+    private IReadOnlySet<string> _hiddenKeys = new HashSet<string>(StringComparer.Ordinal);
+    private double _viewStart = 0.0;
+    private double _viewEnd = 1.0;
+    private bool _isPaused;
+    private Timer? _refreshThrottleTimer;
+    private int _refreshScheduled;
+    private bool _disposed;
+
+    private bool IsFixed =>
+        (_gnss.FixQuality is > 0)
+        || (_gnss.FixType is >= 2)
+        || string.Equals(_gnss.RmcStatus, "A", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized()
+    {
+        _refreshThrottleTimer = new Timer(OnThrottleElapsed, null, Timeout.Infinite, Timeout.Infinite);
+        SessionHub.ProtocolDataChanged += HandleDataChanged;
+        SessionHub.ConnectionStateChanged += HandleDataChanged;
+
+        // 从单例 SessionHub 恢复上次选中的页签、已添加字段和波形缩放区间。
+        _activeTab = (DashboardTab)SessionHub.DashboardActiveTab;
+        SyncPersistedDashboardState();
+        ReloadSnapshots();
+    }
+
+    private void SyncPersistedDashboardState()
+    {
+        _pinnedKeys = SessionHub.GetDashboardPinnedKeys();
+        _hiddenKeys = SessionHub.GetDashboardHiddenKeys();
+        (_viewStart, _viewEnd) = SessionHub.GetWaveViewRange();
+    }
+
+    private void SwitchTab(DashboardTab tab)
+    {
+        _activeTab = tab;
+        SessionHub.DashboardActiveTab = (int)tab;
+        ReloadSnapshots();
+    }
+
+    private void HandleDataChanged()
+    {
+        if (_disposed || _isPaused)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _refreshScheduled, 1, 0) == 0)
+        {
+            _refreshThrottleTimer?.Change(100, Timeout.Infinite);
+        }
+    }
+
+    private void OnThrottleElapsed(object? state)
+    {
+        Interlocked.Exchange(ref _refreshScheduled, 0);
+        if (_disposed || _isPaused)
+        {
+            return;
+        }
+
+        _ = InvokeAsync(() =>
+        {
+            if (_disposed || _isPaused)
+            {
+                return;
+            }
+
+            ReloadSnapshots();
+            StateHasChanged();
+        });
+    }
+
+    private void ReloadSnapshots()
+    {
+        _allSeries = SessionHub.GetNumericSeriesSnapshot();
+        _gnss = SessionHub.GetGnssSnapshot();
+    }
+
+    private List<(NumericSeriesSnapshot Series, string Color)> GetPinnedKpiItems()
+    {
+        var result = new List<(NumericSeriesSnapshot, string)>(_pinnedKeys.Count);
+        for (var i = 0; i < _pinnedKeys.Count; i++)
+        {
+            var key = _pinnedKeys[i];
+            var match = _allSeries.FirstOrDefault(s => string.Equals(s.Key, key, StringComparison.Ordinal));
+            if (match is not null)
+            {
+                result.Add((match, WaveformChartWidget.Palette[i % WaveformChartWidget.Palette.Length]));
+            }
+        }
+
+        return result;
+    }
+
+    private void AddPinnedKey(string key)
+    {
+        SessionHub.AddDashboardPinnedKey(key);
+        SyncPersistedDashboardState();
+    }
+
+    private void RemovePinnedKey(string key)
+    {
+        SessionHub.RemoveDashboardPinnedKey(key);
+        SyncPersistedDashboardState();
+    }
+
+    private void ToggleKeyVisibility(string key)
+    {
+        SessionHub.ToggleDashboardKeyVisibility(key);
+        SyncPersistedDashboardState();
+    }
+
+    private void OnViewRangeChanged((double Start, double End) range)
+    {
+        SessionHub.SetWaveViewRange(range.Start, range.End);
+        (_viewStart, _viewEnd) = SessionHub.GetWaveViewRange();
+    }
+
+    private string GetFixLabel()
+    {
+        if (_gnss.FixType == 3) return "3D 已定位";
+        if (_gnss.FixType == 2) return "2D 已定位";
+        if (IsFixed) return "已定位";
+        return "未定位";
+    }
+
+    private void TogglePause()
+    {
+        _isPaused = !_isPaused;
+        if (!_isPaused)
+        {
+            ReloadSnapshots();
+        }
+    }
+
+    private void ClearAllData()
+    {
+        SessionHub.ClearProtocolData();
+        ReloadSnapshots();
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        SessionHub.ProtocolDataChanged -= HandleDataChanged;
+        SessionHub.ConnectionStateChanged -= HandleDataChanged;
+        _refreshThrottleTimer?.Dispose();
+    }
+}
