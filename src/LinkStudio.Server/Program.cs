@@ -10,6 +10,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<IFolderPickerService, UnsupportedFolderPickerService>();
 builder.Services.AddSingleton<IFilterWindowService, UnsupportedFilterWindowService>();
+builder.Services.AddSingleton<IDeviceChangeMonitor, UnsupportedDeviceChangeMonitor>();
 builder.Services.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
 builder.Services.AddSingleton<WorkbenchSettings>();
 builder.Services.AddSingleton<TerminalSessionHub>();
@@ -45,4 +46,18 @@ internal sealed class UnsupportedFilterWindowService : IFilterWindowService
     public void OpenOrActivate() { }
 
     public void Close() { }
+}
+
+/// <summary>
+/// 浏览器端无 Win32 设备变更广播，提供空实现保证共享 UI 正常注入。
+/// </summary>
+internal sealed class UnsupportedDeviceChangeMonitor : IDeviceChangeMonitor
+{
+    public event EventHandler? DevicesChanged
+    {
+        add { }
+        remove { }
+    }
+
+    public void Dispose() { }
 }

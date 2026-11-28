@@ -7,6 +7,7 @@
 @using LinkStudio.Core.Devices.Virtual
 @using LinkStudio.Core.Helper
 @using LinkStudio.Core.Services
+@using LinkStudio.Core.Services.Interfaces
 @implements IAsyncDisposable
 
 <div class="ls-terminal-page">
@@ -590,6 +591,9 @@
     [Inject]
     private TerminalSessionHub SessionHub { get; set; } = default!;
 
+    [Inject]
+    private IDeviceChangeMonitor DeviceChangeMonitor { get; set; } = default!;
+
     private IReadOnlyList<TerminalLogEntry> _entries = [];
     private ElementReference _outputRef;
     private ElementReference _sendTextareaRef;
@@ -698,6 +702,7 @@
         Settings.Changed += HandleSettingsChanged;
         SessionHub.RulesChanged += HandleFilterRulesChanged;
         SessionHub.JumpToEntryRequested += HandleJumpToEntryRequested;
+        DeviceChangeMonitor.DevicesChanged += HandleHardwareDevicesChanged;
         RefreshPorts();
     }
 
@@ -781,6 +786,46 @@
             }
 
             TrimEntriesToLimit();
+            StateHasChanged();
+        });
+    }
+
+    private void HandleHardwareDevicesChanged(object? sender, EventArgs e)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            RefreshPorts();
+
+            // 如果当前正打开的真实串口已从系统端口列表消失，说明设备被物理拔出：
+            // 立即记日志、提示用户并自动关闭连接与串口日志，无需用户再手动点关闭。
+            if (_device is SerialPortDevice activeSerial
+                && !_isChanging
+                && !_availablePorts.Contains(activeSerial.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var removedPort = activeSerial.Name;
+                Serilog.Log.Warning("检测到当前串口 {PortName} 已被拔出，自动关闭连接", removedPort);
+                AppendSystemEntry($"检测到串口 {removedPort} 已被拔出，已自动关闭连接。");
+                _connectionError = $"串口 {removedPort} 已被拔出，已自动关闭。";
+
+                _isChanging = true;
+                try
+                {
+                    await StopSessionAsync();
+                    _status = "设备已拔出";
+                }
+                finally
+                {
+                    _isChanging = false;
+                }
+
+                RefreshPorts();
+            }
+
             StateHasChanged();
         });
     }
@@ -1523,6 +1568,7 @@
         Settings.Changed -= HandleSettingsChanged;
         SessionHub.RulesChanged -= HandleFilterRulesChanged;
         SessionHub.JumpToEntryRequested -= HandleJumpToEntryRequested;
+        DeviceChangeMonitor.DevicesChanged -= HandleHardwareDevicesChanged;
 
         try
         {
