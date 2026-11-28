@@ -985,10 +985,20 @@ input[type="number"] {
 .ls-settings-nav {
     width: 244px;
     flex-shrink: 0;
-    padding: 22px 14px;
+    padding: 22px 14px 16px;
     background: var(--ls-bg-surface);
     border-right: 1px solid var(--ls-border);
+    display: flex;
+    flex-direction: column;
     user-select: none;
+}
+
+.ls-settings-version {
+    margin-top: auto;
+    padding: 12px 10px 0;
+    border-top: 1px solid var(--ls-border);
+    font-size: 11.5px;
+    color: var(--ls-text-muted);
 }
 
 .ls-settings-nav-title {

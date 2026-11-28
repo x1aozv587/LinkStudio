@@ -1,4 +1,5 @@
 using System.Windows;
+using LinkStudio.Core;
 using LinkStudio.Core.Services;
 using LinkStudio.Core.Services.Interfaces;
 using LinkStudio.Desktop.Win.Services;
@@ -40,6 +41,7 @@ public partial class MainWindow : Window
         Resources.Add("services", serviceProvider);
 
         InitializeComponent();
+        Title = $"{LinkStudioMetadata.AppName} {LinkStudioMetadata.DisplayVersion}";
 
         // 挂载 Win32 WM_DEVICECHANGE 监听，插拔 USB 串口自动刷新列表。
         _deviceChangeMonitor.Attach(this);

@@ -9,5 +9,6 @@ public sealed class SmokeTests
     public void MetadataHasExpectedAppName()
     {
         Assert.Equal("LinkStudio", LinkStudioMetadata.AppName);
+        Assert.Matches(@"^\d+\.\d+\.\d+\.\d+$", LinkStudioMetadata.Version);
     }
 }
