@@ -1,0 +1,457 @@
+@using System.Globalization
+@using System.Text
+@using LinkStudio.Core.Helper
+@using LinkStudio.Core.Models
+@implements IAsyncDisposable
+
+<div class="ls-app-shell ls-filter-window" data-theme="@Settings.GetThemeKey()">
+    <div class="ls-filter-win-shell">
+        <!-- 顶部标题与操作栏 -->
+        <header class="ls-filter-win-header">
+            <div class="ls-filter-win-title-group">
+                <h2>预设发送</h2>
+                <span class="ls-status-pill @(SessionHub.IsDeviceOpen ? "is-connected" : string.Empty)">
+                    <span class="ls-status-pill-dot"></span>
+                    @(SessionHub.IsDeviceOpen ? $"已连接 {SessionHub.ActiveDeviceName}" : "主窗口未连接")
+                </span>
+            </div>
+
+            <div class="ls-filter-win-actions">
+                <button type="button"
+                        class="ls-btn-subtle"
+                        disabled="@(_isCycleRunning)"
+                        @onclick="AddPreset">
+                    + 新增预设
+                </button>
+            </div>
+        </header>
+
+        <!-- 循环发送控制条（仅针对勾选了“循环”的条目；单条直接点右侧「发送」即可，无需勾选） -->
+        <div class="ls-preset-cycle-bar">
+            <span class="ls-preset-cycle-info ls-mono">
+                @if (_isCycleRunning)
+                {
+                    <span>循环运行中 · 已发 <strong>@_cycleRounds</strong> 轮</span>
+                }
+                else
+                {
+                    <span>勾选「循环」可多条轮发（已选 <strong>@Settings.SendPresets.Count(p => p.IsSelectedForCycle)</strong> 条）；单条直接点「发送」</span>
+                }
+            </span>
+
+            @if (_isCycleRunning)
+            {
+                <button type="button"
+                        class="ls-connect-btn is-open ls-cycle-btn"
+                        @onclick="StopCycleAsync">
+                    停止循环
+                </button>
+            }
+            else
+            {
+                <button type="button"
+                        class="ls-connect-btn ls-cycle-btn"
+                        disabled="@(!SessionHub.IsDeviceOpen || !Settings.SendPresets.Any(p => p.IsSelectedForCycle))"
+                        @onclick="StartCycle">
+                    开始循环发送
+                </button>
+            }
+        </div>
+
+        @if (_error is not null)
+        {
+            <div class="ls-filter-error" role="alert">@_error</div>
+        }
+
+        <!-- 预设卡片列表 -->
+        <div class="ls-drawer-body ls-preset-list">
+            @if (Settings.SendPresets.Count == 0)
+            {
+                <div class="ls-rules-empty">暂无预设指令，点击右上角「+ 新增预设」添加一条。</div>
+            }
+            else
+            {
+                @foreach (var preset in Settings.SendPresets)
+                {
+                    <div class="ls-preset-card @(preset.IsSelectedForCycle ? "is-selected" : string.Empty)">
+                        <div class="ls-preset-card-top">
+                            <label class="ls-preset-check" title="勾选后参与顶部「循环发送」；单条直接点右侧发送即可">
+                                <input type="checkbox"
+                                       checked="@preset.IsSelectedForCycle"
+                                       disabled="@(_isCycleRunning)"
+                                       @onchange="e => OnPresetBoolChanged(preset, (p, v) => p.IsSelectedForCycle = v, e)" />
+                                <span class="ls-preset-check-label">循环</span>
+                            </label>
+
+                            <input class="ls-input ls-preset-name"
+                                   type="text"
+                                   placeholder="备注名称"
+                                   value="@preset.Name"
+                                   disabled="@(_isCycleRunning)"
+                                   @oninput="e => UpdatePreset(preset, p => p.Name = e.Value?.ToString() ?? string.Empty)" />
+
+                            <div class="ls-number-pill ls-preset-interval" title="循环发送后的等待间隔（毫秒）">
+                                <input class="ls-number-bare ls-mono"
+                                       type="number"
+                                       min="10"
+                                       step="100"
+                                       value="@preset.Interval"
+                                       disabled="@(_isCycleRunning)"
+                                       @onchange="e => OnPresetIntervalChanged(preset, e)" />
+                                <span class="ls-number-unit">ms</span>
+                            </div>
+
+                            <button type="button"
+                                    class="ls-btn-subtle is-accent"
+                                    disabled="@(!SessionHub.IsDeviceOpen || string.IsNullOrEmpty(preset.Text))"
+                                    @onclick="() => SendPresetOnceAsync(preset)">
+                                发送
+                            </button>
+
+                            <button type="button"
+                                    class="ls-icon-btn ls-icon-btn-sm"
+                                    title="删除预设"
+                                    aria-label="删除预设"
+                                    disabled="@(_isCycleRunning)"
+                                    @onclick="() => RemovePreset(preset)">
+                                ×
+                            </button>
+                        </div>
+
+                        <div class="ls-preset-card-bottom">
+                            <input class="ls-input ls-preset-text ls-mono"
+                                   type="text"
+                                   placeholder="@(preset.IsHex ? "输入 HEX，如 AA 55 01 00" : "输入指令内容...")"
+                                   value="@preset.Text"
+                                   disabled="@(_isCycleRunning)"
+                                   @oninput="e => UpdatePreset(preset, p => p.Text = e.Value?.ToString() ?? string.Empty)" />
+
+                            <button type="button"
+                                    class="ls-pill-toggle ls-pill-sm @(preset.IsHex ? "is-active" : string.Empty)"
+                                    disabled="@(_isCycleRunning)"
+                                    @onclick="() => UpdatePreset(preset, p => p.IsHex = !p.IsHex)">
+                                HEX
+                            </button>
+                            <button type="button"
+                                    class="ls-pill-toggle ls-pill-sm @(preset.AppendCr ? "is-active" : string.Empty)"
+                                    disabled="@(_isCycleRunning)"
+                                    @onclick="() => UpdatePreset(preset, p => p.AppendCr = !p.AppendCr)">
+                                \r
+                            </button>
+                            <button type="button"
+                                    class="ls-pill-toggle ls-pill-sm @(preset.AppendLf ? "is-active" : string.Empty)"
+                                    disabled="@(_isCycleRunning)"
+                                    @onclick="() => UpdatePreset(preset, p => p.AppendLf = !p.AppendLf)">
+                                \n
+                            </button>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private sealed record PreparedPreset(byte[] Payload, int IntervalMs);
+
+    [Inject]
+    private WorkbenchSettings Settings { get; set; } = default!;
+
+    [Inject]
+    private TerminalSessionHub SessionHub { get; set; } = default!;
+
+    private bool _isCycleRunning;
+    private int _cycleRounds;
+    private string? _error;
+    private CancellationTokenSource? _cycleCts;
+    private Task? _cycleTask;
+    private bool _disposed;
+
+    protected override void OnInitialized()
+    {
+        Settings.Changed += HandleExternalChanged;
+        SessionHub.ConnectionStateChanged += HandleConnectionStateChanged;
+    }
+
+    private void HandleExternalChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            if (!_disposed)
+            {
+                StateHasChanged();
+            }
+        });
+    }
+
+    private void HandleConnectionStateChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (!SessionHub.IsDeviceOpen && _isCycleRunning)
+            {
+                await StopCycleAsync();
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private void AddPreset()
+    {
+        _error = null;
+        var nextId = Settings.SendPresets.Count == 0
+            ? 1
+            : Settings.SendPresets.Max(p => p.Id) + 1;
+        Settings.SendPresets.Add(new SendPresetConfig
+        {
+            Id = nextId,
+            Name = $"预设 {nextId}",
+            Text = string.Empty,
+            Interval = 1000,
+            IsHex = false,
+            AppendCr = false,
+            AppendLf = false,
+            IsSelectedForCycle = false
+        });
+        Settings.NotifyChanged();
+    }
+
+    private void RemovePreset(SendPresetConfig preset)
+    {
+        Settings.SendPresets.Remove(preset);
+        _error = null;
+        Settings.NotifyChanged();
+    }
+
+    private void UpdatePreset(SendPresetConfig preset, Action<SendPresetConfig> mutate)
+    {
+        mutate(preset);
+        _error = null;
+        Settings.NotifyChanged();
+    }
+
+    private void OnPresetBoolChanged(SendPresetConfig preset, Action<SendPresetConfig, bool> setter, ChangeEventArgs e)
+    {
+        if (e.Value is bool value)
+        {
+            setter(preset, value);
+            _error = null;
+            Settings.NotifyChanged();
+        }
+    }
+
+    private void OnPresetIntervalChanged(SendPresetConfig preset, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var ms))
+        {
+            preset.Interval = Math.Clamp(ms, 10, 3_600_000);
+            _error = null;
+            Settings.NotifyChanged();
+        }
+    }
+
+    private static bool TryBuildPresetPayload(SendPresetConfig preset, out byte[] payload, out string error)
+    {
+        if (string.IsNullOrEmpty(preset.Text))
+        {
+            payload = [];
+            error = $"预设「{(string.IsNullOrWhiteSpace(preset.Name) ? "未命名" : preset.Name)}」内容为空。";
+            return false;
+        }
+
+        byte[] raw;
+        if (preset.IsHex)
+        {
+            var normalized = preset.Text.Replace("\r", " ", StringComparison.Ordinal)
+                                        .Replace("\n", " ", StringComparison.Ordinal);
+            if (!DataHelper.TryParseHex(normalized, out raw, out var hexError))
+            {
+                payload = [];
+                error = $"预设「{(string.IsNullOrWhiteSpace(preset.Name) ? "未命名" : preset.Name)}」：{hexError}";
+                return false;
+            }
+        }
+        else
+        {
+            raw = Encoding.UTF8.GetBytes(preset.Text);
+        }
+
+        var extra = (preset.AppendCr ? 1 : 0) + (preset.AppendLf ? 1 : 0);
+        if (extra == 0)
+        {
+            payload = raw;
+            error = string.Empty;
+            return true;
+        }
+
+        payload = new byte[raw.Length + extra];
+        Buffer.BlockCopy(raw, 0, payload, 0, raw.Length);
+        var offset = raw.Length;
+        if (preset.AppendCr)
+        {
+            payload[offset++] = 0x0D;
+        }
+
+        if (preset.AppendLf)
+        {
+            payload[offset] = 0x0A;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private async Task SendPresetOnceAsync(SendPresetConfig preset)
+    {
+        if (!SessionHub.IsDeviceOpen)
+        {
+            _error = "请先在主窗口打开串口或虚拟设备。";
+            return;
+        }
+
+        if (!TryBuildPresetPayload(preset, out var payload, out var error))
+        {
+            _error = error;
+            return;
+        }
+
+        _error = null;
+        try
+        {
+            await SessionHub.SendBytesAsync(payload);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "发送预设指令失败");
+            _error = $"发送失败：{ex.Message}";
+        }
+    }
+
+    private void StartCycle()
+    {
+        if (!SessionHub.IsDeviceOpen || _isCycleRunning)
+        {
+            return;
+        }
+
+        var selected = Settings.SendPresets.Where(p => p.IsSelectedForCycle).ToList();
+        if (selected.Count == 0)
+        {
+            _error = "请先勾选至少一条参与循环的预设指令。";
+            return;
+        }
+
+        var prepared = new List<PreparedPreset>(selected.Count);
+        foreach (var preset in selected)
+        {
+            if (!TryBuildPresetPayload(preset, out var payload, out var error))
+            {
+                _error = error;
+                return;
+            }
+
+            if (preset.Interval < 10)
+            {
+                _error = $"预设「{(string.IsNullOrWhiteSpace(preset.Name) ? "未命名" : preset.Name)}」的间隔必须不少于 10 ms。";
+                return;
+            }
+
+            prepared.Add(new PreparedPreset(payload, preset.Interval));
+        }
+
+        _error = null;
+        _cycleRounds = 0;
+        _isCycleRunning = true;
+        var cts = new CancellationTokenSource();
+        _cycleCts = cts;
+        _cycleTask = RunCycleLoopAsync(prepared, cts.Token);
+    }
+
+    private async Task RunCycleLoopAsync(List<PreparedPreset> items, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested && SessionHub.IsDeviceOpen)
+            {
+                foreach (var item in items)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    await SessionHub.SendBytesAsync(item.Payload, ct);
+                    await Task.Delay(item.IntervalMs, ct);
+                }
+
+                _cycleRounds++;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 用户主动停止或关闭设备属于正常退出。
+        }
+        catch (Exception error)
+        {
+            Serilog.Log.Warning(error, "预设循环发送已停止");
+            if (!_disposed)
+            {
+                await InvokeAsync(() =>
+                {
+                    _error = $"循环发送已中断：{error.Message}";
+                    StateHasChanged();
+                });
+            }
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                await InvokeAsync(() =>
+                {
+                    _isCycleRunning = false;
+                    StateHasChanged();
+                });
+            }
+        }
+    }
+
+    private async Task StopCycleAsync()
+    {
+        var cts = _cycleCts;
+        var task = _cycleTask;
+        _cycleCts = null;
+        _cycleTask = null;
+        _isCycleRunning = false;
+
+        if (cts is not null)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+
+        if (task is not null)
+        {
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException)
+            {
+                // 正常取消。
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        Settings.Changed -= HandleExternalChanged;
+        SessionHub.ConnectionStateChanged -= HandleConnectionStateChanged;
+        await StopCycleAsync();
+    }
+}

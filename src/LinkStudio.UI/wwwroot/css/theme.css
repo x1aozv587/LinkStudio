@@ -2026,3 +2026,118 @@ input[type="number"] {
     background: var(--ls-accent-soft);
     box-shadow: inset 3px 0 0 var(--ls-accent);
 }
+
+/* ==================== 预设发送弹出抽屉 ==================== */
+
+.ls-send-right-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-drawer-wide {
+    width: min(470px, 94vw);
+}
+
+.ls-drawer-header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ls-preset-cycle-bar {
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--ls-bg-statusbar);
+    border-bottom: 1px solid var(--ls-border);
+    flex-shrink: 0;
+}
+
+.ls-preset-cycle-info {
+    font-size: 12px;
+    color: var(--ls-text-secondary);
+}
+
+.ls-cycle-btn {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12px;
+}
+
+.ls-preset-list {
+    gap: 10px;
+}
+
+.ls-preset-card {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--ls-border);
+    background: var(--ls-bg-canvas);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color 0.15s ease;
+}
+
+.ls-preset-card.is-selected {
+    border-color: var(--ls-accent);
+}
+
+.ls-preset-card-top,
+.ls-preset-card-bottom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ls-preset-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.ls-preset-check-label {
+    font-size: 11.5px;
+    color: var(--ls-text-secondary);
+    white-space: nowrap;
+}
+
+.ls-preset-check input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--ls-accent);
+    cursor: pointer;
+}
+
+.ls-preset-name {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    font-size: 12.5px;
+}
+
+.ls-preset-interval {
+    height: 28px;
+}
+
+.ls-preset-interval .ls-number-bare {
+    width: 44px;
+}
+
+.ls-preset-text {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    font-size: 12.5px;
+}
+
+.ls-pill-sm {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 11.5px;
+}

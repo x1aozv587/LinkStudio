@@ -83,10 +83,9 @@ namespace LinkStudio.UI.State
         public const int InputMinFontSize = 7;
         public const int InputMaxFontSize = 40;
 
-        private List<SendPresetConfig> _sendPresets = AppsSettings.CreateDefault().SendPreset;
-
         public StudioSettings Studio { get; } = new();
         public SerialWorkspaceSettings Serial { get; } = new();
+        public List<SendPresetConfig> SendPresets { get; private set; } = AppsSettings.CreateDefault().SendPreset;
 
         public event Action? Changed;
 
@@ -180,7 +179,9 @@ namespace LinkStudio.UI.State
             Serial.AppendLf = source.Send.AppendLf;
             Serial.EnterToSend = source.Send.EnterToSend;
 
-            _sendPresets = source.SendPreset ?? [];
+            SendPresets = source.SendPreset is { Count: > 0 }
+                ? source.SendPreset
+                : AppsSettings.CreateDefault().SendPreset;
         }
 
         public AppsSettings ToAppsSettings()
@@ -224,7 +225,7 @@ namespace LinkStudio.UI.State
                     AppendLf = Serial.AppendLf,
                     EnterToSend = Serial.EnterToSend
                 },
-                SendPreset = _sendPresets
+                SendPreset = SendPresets
             };
         }
 

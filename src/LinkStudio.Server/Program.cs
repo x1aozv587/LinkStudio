@@ -10,6 +10,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<IFolderPickerService, UnsupportedFolderPickerService>();
 builder.Services.AddSingleton<IFilterWindowService, UnsupportedFilterWindowService>();
+builder.Services.AddSingleton<IPresetWindowService, UnsupportedPresetWindowService>();
 builder.Services.AddSingleton<IDeviceChangeMonitor, UnsupportedDeviceChangeMonitor>();
 builder.Services.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
 builder.Services.AddSingleton<WorkbenchSettings>();
@@ -40,6 +41,15 @@ internal sealed class UnsupportedFolderPickerService : IFolderPickerService
 /// 浏览器端暂不提供独立桌面窗口，提供空实现保证共享 UI 正常注入。
 /// </summary>
 internal sealed class UnsupportedFilterWindowService : IFilterWindowService
+{
+    public bool IsSupported => false;
+
+    public void OpenOrActivate() { }
+
+    public void Close() { }
+}
+
+internal sealed class UnsupportedPresetWindowService : IPresetWindowService
 {
     public bool IsSupported => false;
 
