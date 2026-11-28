@@ -1,5 +1,7 @@
 using System.Windows;
 using LinkStudio.UI.Services;
+using LinkStudio.UI.State;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace LinkStudio.Desktop.Win.Services
 {
@@ -47,6 +49,9 @@ namespace LinkStudio.Desktop.Win.Services
                     {
                         _window = null;
                     }
+
+                    // 关闭独立搜索窗口时同步清空过滤规则，自动停止主窗口高亮搜索。
+                    _serviceProvider.GetService<TerminalSessionHub>()?.ClearRules();
                 };
 
                 _window = window;

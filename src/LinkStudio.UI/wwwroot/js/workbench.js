@@ -10,8 +10,14 @@ export function scrollToBottom(element, force = false) {
         return;
     }
 
+    if (force) {
+        // 给予 250ms 保护窗口，避免高速数据在点击“回到底部”的瞬间撑高内容导致误判为上翻。
+        element.dataset.forceBottomUntil = String(Date.now() + 250);
+    }
+
     element.dataset.userScrolledUp = "false";
     element.scrollTop = element.scrollHeight;
+    element.dataset.lastScrollTop = String(element.scrollTop);
 }
 
 export function scrollToEntry(container, entryId) {
@@ -31,12 +37,45 @@ export function attachAutoScrollWatcher(element, dotNetRef) {
     }
 
     let lastNearBottom = true;
+    let userScrollUpIntentUntil = 0;
+
+    // 只有真实的用户向上交互（滚轮上滑、按住滚动条、方向/翻页键）才允许锁定停止自动滚底，
+    // 彻底杜绝高速日志达到行数上限从顶部裁剪 DOM 时，浏览器自动钳位 scrollTop 造成的误停。
+    const markUserScrollUpIntent = () => {
+        userScrollUpIntentUntil = Date.now() + 400;
+    };
+
+    const onWheel = (e) => {
+        if (e.deltaY < 0) {
+            markUserScrollUpIntent();
+        }
+    };
+
+    const onPointerDown = () => {
+        markUserScrollUpIntent();
+    };
 
     const onScroll = () => {
-        // 距离底部 28px 以内视为贴底，避免亚像素舍入导致状态闪烁。
+        const forceUntil = Number(element.dataset.forceBottomUntil || "0");
+        if (Date.now() < forceUntil) {
+            element.scrollTop = element.scrollHeight;
+            element.dataset.userScrolledUp = "false";
+            if (!lastNearBottom) {
+                lastNearBottom = true;
+                dotNetRef.invokeMethodAsync("OnTerminalScrollPositionChanged", true);
+            }
+            return;
+        }
+
+        // 距离底部 28px 以内视为贴底。
         const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-        const isNearBottom = distanceToBottom <= 28;
-        // 同步写入 DOM 属性，让同帧到达的 scrollToBottom 能立刻感知，避免跨线程异步竞态。
+        let isNearBottom = distanceToBottom <= 28;
+
+        // 如果当前原本在贴底跟随状态，且没有真实的用户上滚意图，则维持贴底，绝不因 DOM 裁剪自动停住。
+        if (!isNearBottom && lastNearBottom && Date.now() > userScrollUpIntentUntil) {
+            isNearBottom = true;
+        }
+
         element.dataset.userScrolledUp = isNearBottom ? "false" : "true";
         if (isNearBottom !== lastNearBottom) {
             lastNearBottom = isNearBottom;
@@ -45,6 +84,10 @@ export function attachAutoScrollWatcher(element, dotNetRef) {
     };
 
     const onKeyDown = (e) => {
+        if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") {
+            markUserScrollUpIntent();
+        }
+
         // 在接收区按 Ctrl+A / Cmd+A 时，仅全选接收区内部的日志文本，避免选中整个页面按钮。
         if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a") {
             e.preventDefault();
@@ -68,12 +111,16 @@ export function attachAutoScrollWatcher(element, dotNetRef) {
     };
 
     element.addEventListener("scroll", onScroll, { passive: true });
+    element.addEventListener("wheel", onWheel, { passive: true });
+    element.addEventListener("pointerdown", onPointerDown, { passive: true });
     element.addEventListener("keydown", onKeyDown);
     element.addEventListener("mousedown", onMouseDown);
 
     return {
         dispose() {
             element.removeEventListener("scroll", onScroll);
+            element.removeEventListener("wheel", onWheel);
+            element.removeEventListener("pointerdown", onPointerDown);
             element.removeEventListener("keydown", onKeyDown);
             element.removeEventListener("mousedown", onMouseDown);
         }

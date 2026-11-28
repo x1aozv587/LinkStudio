@@ -133,10 +133,10 @@
         </div>
     </aside>
 
-    <!-- 主内容舞台：终端保持挂载，切到其他页时不断开串口、不丢历史日志 -->
+    <!-- 主内容舞台：终端保持挂载，切到其他页时不断开串口、不丢历史日志，但暂停隐藏时的 DOM 重绘 -->
     <main class="ls-stage">
         <div class="ls-pane @(_activePage == AppPage.Terminal ? string.Empty : "ls-pane-hidden")">
-            <TerminalView Settings="_settings" />
+            <TerminalView Settings="_settings" IsVisible="@(_activePage == AppPage.Terminal)" />
         </div>
 
         @if (_activePage == AppPage.Protocol)

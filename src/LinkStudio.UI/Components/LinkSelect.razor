@@ -17,7 +17,7 @@
     @if (_isOpen && !Disabled)
     {
         <div class="ls-menu-backdrop" @onclick="Close"></div>
-        <div class="ls-combobox-menu ls-select-menu @(IsMono ? "ls-mono" : string.Empty)" role="listbox" aria-label="@AriaLabel">
+        <div class="ls-combobox-menu ls-select-menu @(OpenUpward ? "is-upward" : string.Empty) @(IsMono ? "ls-mono" : string.Empty)" role="listbox" aria-label="@AriaLabel">
             @if (Options.Count == 0)
             {
                 <div class="ls-select-empty">@EmptyText</div>
@@ -70,6 +70,9 @@
 
     [Parameter]
     public string EmptyText { get; set; } = "暂无选项";
+
+    [Parameter]
+    public bool OpenUpward { get; set; }
 
     private bool _isOpen;
 

@@ -442,6 +442,32 @@ namespace LinkStudio.UI.State
             EntriesChanged?.Invoke();
         }
 
+        public void AddEntries(IReadOnlyList<TerminalLogEntry> entries, int maxDisplayLines, bool preserveTop = false)
+        {
+            if (entries.Count == 0)
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    _entries.Add(entries[i]);
+                }
+
+                var limit = preserveTop
+                    ? Math.Max(maxDisplayLines, 5000)
+                    : Math.Max(maxDisplayLines, 50);
+                if (_entries.Count > limit)
+                {
+                    _entries.RemoveRange(0, _entries.Count - limit);
+                }
+            }
+
+            EntriesChanged?.Invoke();
+        }
+
         public void TrimEntries(int maxDisplayLines)
         {
             var changed = false;
