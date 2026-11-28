@@ -14,6 +14,7 @@ namespace LinkStudio.Desktop.Win;
 public partial class MainWindow : Window
 {
     private readonly IFilterWindowService _filterWindowService;
+    private readonly IPresetWindowService _presetWindowService;
     private readonly WindowsDeviceChangeMonitor _deviceChangeMonitor;
 
     public MainWindow()
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
         serviceCollection.AddWpfBlazorWebView();
         serviceCollection.AddSingleton<IFolderPickerService, WindowsFolderPickerService>();
         serviceCollection.AddSingleton<IFilterWindowService, WindowsFilterWindowService>();
+        serviceCollection.AddSingleton<IPresetWindowService, WindowsPresetWindowService>();
         serviceCollection.AddSingleton<IDeviceChangeMonitor>(_deviceChangeMonitor);
         serviceCollection.AddSingleton<IAppsSettingsService>(_ => new AppsSettingsService());
         serviceCollection.AddSingleton<WorkbenchSettings>();
@@ -31,6 +33,7 @@ public partial class MainWindow : Window
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
         _filterWindowService = serviceProvider.GetRequiredService<IFilterWindowService>();
+        _presetWindowService = serviceProvider.GetRequiredService<IPresetWindowService>();
 
         // 必须在 InitializeComponent() 之前把 DI 容器放入窗口 Resources：
         // XAML 解析器实例化 BlazorWebView 时会立刻查找 {DynamicResource services}。
@@ -41,10 +44,11 @@ public partial class MainWindow : Window
         // 挂载 Win32 WM_DEVICECHANGE 监听，插拔 USB 串口自动刷新列表。
         _deviceChangeMonitor.Attach(this);
 
-        // 主窗口关闭时同步关闭独立搜索/过滤窗口并释放热插拔监听。
+        // 主窗口关闭时同步关闭独立子窗口并释放热插拔监听。
         Closed += (_, _) =>
         {
             _filterWindowService.Close();
+            _presetWindowService.Close();
             _deviceChangeMonitor.Dispose();
         };
     }

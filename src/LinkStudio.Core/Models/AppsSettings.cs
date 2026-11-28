@@ -86,16 +86,28 @@ namespace LinkStudio.Core.Models
                 }
             };
 
-            for (var i = 0; i < 5; i++)
+            settings.SendPreset.Add(new SendPresetConfig
             {
-                settings.SendPreset.Add(new SendPresetConfig
-                {
-                    Id = 0,
-                    Interval = 0,
-                    Text = string.Empty,
-                    IsHex = false
-                });
-            }
+                Id = 1,
+                Name = "AT 测试",
+                Text = "AT",
+                Interval = 1000,
+                IsHex = false,
+                AppendCr = true,
+                AppendLf = true,
+                IsSelectedForCycle = false
+            });
+            settings.SendPreset.Add(new SendPresetConfig
+            {
+                Id = 2,
+                Name = "HEX 心跳",
+                Text = "AA 55 01 00",
+                Interval = 1000,
+                IsHex = true,
+                AppendCr = false,
+                AppendLf = false,
+                IsSelectedForCycle = false
+            });
 
             return settings;
         }
@@ -146,8 +158,12 @@ namespace LinkStudio.Core.Models
     public class SendPresetConfig
     {
         public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
         public string Text { get; set; } = string.Empty;
-        public int Interval { get; set; }
+        public int Interval { get; set; } = 1000;
         public bool IsHex { get; set; }
+        public bool AppendCr { get; set; }
+        public bool AppendLf { get; set; }
+        public bool IsSelectedForCycle { get; set; }
     }
 }

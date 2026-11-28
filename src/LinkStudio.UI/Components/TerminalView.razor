@@ -6,6 +6,7 @@
 @using LinkStudio.Core.Devices.Serial
 @using LinkStudio.Core.Devices.Virtual
 @using LinkStudio.Core.Helper
+@using LinkStudio.Core.Models
 @using LinkStudio.Core.Services
 @using LinkStudio.Core.Services.Interfaces
 @implements IAsyncDisposable
@@ -345,12 +346,22 @@
                     </span>
                 </div>
 
-                <button type="button"
-                        class="ls-send-btn"
-                        disabled="@(!CanSend)"
-                        @onclick="SendAsync">
-                    @(_isSending ? "发送中…" : "发送")
-                </button>
+                <div class="ls-send-right-actions">
+                    <button type="button"
+                            class="ls-pill-toggle"
+                            title="@(PresetWindowService.IsSupported ? "打开独立预设发送窗口" : "仅桌面端支持独立预设窗口")"
+                            disabled="@(!PresetWindowService.IsSupported)"
+                            @onclick="PresetWindowService.OpenOrActivate">
+                        预设
+                    </button>
+
+                    <button type="button"
+                            class="ls-send-btn"
+                            disabled="@(!CanSend)"
+                            @onclick="SendAsync">
+                        @(_isSending ? "发送中…" : "发送")
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -587,6 +598,9 @@
 
     [Inject]
     private IFilterWindowService FilterWindowService { get; set; } = default!;
+
+    [Inject]
+    private IPresetWindowService PresetWindowService { get; set; } = default!;
 
     [Inject]
     private TerminalSessionHub SessionHub { get; set; } = default!;
@@ -1093,6 +1107,7 @@
                 (packet, _) => OnPacketReceivedAsync(bus, packet));
 
             await device.OpenAsync();
+            SessionHub.SetActiveDevice(device);
             _status = _mode == DeviceMode.Serial
                 ? $"已连接 {_selectedPort} · {_baudRateText.Trim()} bps"
                 : "虚拟 MCU 运行中";
@@ -1124,6 +1139,8 @@
 
     private async Task StopSessionAsync()
     {
+        SessionHub.SetActiveDevice(null);
+
         var device = _device;
         var recorder = _logRecorder;
         var bus = _bus;

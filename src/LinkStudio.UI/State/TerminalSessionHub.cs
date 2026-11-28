@@ -1,4 +1,5 @@
 using System.Text;
+using LinkStudio.Core.Devices;
 
 namespace LinkStudio.UI.State
 {
@@ -25,11 +26,34 @@ namespace LinkStudio.UI.State
         private readonly List<TerminalLogEntry> _entries = [];
         private readonly List<TerminalFilterRule> _rules = [];
         private IReadOnlyList<CompiledFilterRule> _compiledRules = [];
+        private ICommunicationDevice? _activeDevice;
         private long _nextEntryId;
 
         public event Action? EntriesChanged;
         public event Action? RulesChanged;
         public event Action<long>? JumpToEntryRequested;
+        public event Action? ConnectionStateChanged;
+
+        public bool IsDeviceOpen => _activeDevice?.IsOpen == true;
+
+        public string ActiveDeviceName => _activeDevice?.Name ?? string.Empty;
+
+        public void SetActiveDevice(ICommunicationDevice? device)
+        {
+            _activeDevice = device;
+            ConnectionStateChanged?.Invoke();
+        }
+
+        public Task SendBytesAsync(ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+        {
+            var device = _activeDevice;
+            if (device is null || !device.IsOpen)
+            {
+                throw new InvalidOperationException("请先在主窗口打开串口或虚拟设备。");
+            }
+
+            return device.SendAsync(payload, ct);
+        }
 
         public long NextEntryId() => Interlocked.Increment(ref _nextEntryId);
 
